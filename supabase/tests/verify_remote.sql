@@ -142,6 +142,124 @@ BEGIN
 END $$;
 
 --------------------------------------------------------------------------------
+-- 4.1 Integridade dos vínculos (somente leitura)
+--------------------------------------------------------------------------------
+-- Verifica a regra de negócio "um usuário possui no máximo um vínculo efetivo
+-- por estabelecimento" e lista (sem alterar nada) os vínculos duplicados,
+-- os vínculos sem proprietário e os vínculos órfãos.
+DO $$
+DECLARE
+  v_unique_exists integer;
+  v_duplicate_groups integer;
+  v_duplicate_rows integer;
+  v_missing_owner integer;
+  v_detail text;
+BEGIN
+  -- (a) Existe constraint/índice único para (establishment_id, user_id)?
+  SELECT count(*) INTO v_unique_exists
+  FROM (
+    SELECT c.oid
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.establishment_members'::regclass
+      AND c.contype = 'u'
+      AND (
+        SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+        FROM unnest(c.conkey) AS k(attnum)
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+      ) = ARRAY['establishment_id', 'user_id']
+    UNION ALL
+    SELECT i.indexrelid
+    FROM pg_index i
+    WHERE i.indrelid = 'public.establishment_members'::regclass
+      AND i.indisunique
+      AND i.indisvalid
+      AND i.indpred IS NULL
+      AND (
+        SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+        FROM unnest(i.indkey::smallint[]) AS k(attnum)
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+      ) = ARRAY['establishment_id', 'user_id']
+  ) AS uniques;
+
+  IF v_unique_exists = 0 THEN
+    RAISE NOTICE 'AVISO: não há constraint UNIQUE (establishment_id, user_id) em public.establishment_members. Aplique a migration 20250127000008_membership_integrity.sql depois de revisar os dados.';
+  ELSE
+    RAISE NOTICE 'OK: unicidade de vínculo garantida em public.establishment_members.';
+  END IF;
+
+  -- (b) Vínculos duplicados (mesmo estabelecimento e mesmo usuário).
+  SELECT count(*), coalesce(sum(d.total), 0)
+  INTO v_duplicate_groups, v_duplicate_rows
+  FROM (
+    SELECT count(*) AS total
+    FROM public.establishment_members
+    GROUP BY establishment_id, user_id
+    HAVING count(*) > 1
+  ) AS d;
+
+  IF v_duplicate_groups > 0 THEN
+    SELECT string_agg(d.detail, E'\n') INTO v_detail
+    FROM (
+      SELECT format(
+        'establishment_id=%s user_id=%s ocorrencias=%s (ids: %s)',
+        m.establishment_id, m.user_id, count(*),
+        string_agg(m.id::text, ', ' ORDER BY m.created_at, m.id)
+      ) AS detail
+      FROM public.establishment_members m
+      GROUP BY m.establishment_id, m.user_id
+      HAVING count(*) > 1
+    ) AS d;
+
+    RAISE NOTICE 'FALHA: %s grupo(s) de vínculos duplicados (%s registro(s) afetado(s)):%s',
+      v_duplicate_groups, v_duplicate_rows, E'\n' || v_detail;
+  ELSE
+    RAISE NOTICE 'OK: nenhum vínculo duplicado em public.establishment_members.';
+  END IF;
+
+  -- (c) Todo estabelecimento precisa de um vínculo de proprietário ativo.
+  SELECT count(*) INTO v_missing_owner
+  FROM public.establishments e
+  WHERE NOT EXISTS (
+    SELECT 1 FROM public.establishment_members m
+    WHERE m.establishment_id = e.id
+      AND m.role = 'owner'
+      AND m.is_active = true
+  );
+
+  IF v_missing_owner > 0 THEN
+    RAISE NOTICE 'AVISO: %s estabelecimento(s) sem vínculo de proprietário ativo.', v_missing_owner;
+  ELSE
+    RAISE NOTICE 'OK: todo estabelecimento possui um proprietário ativo.';
+  END IF;
+END $$;
+
+-- (d) Detalhamento legível dos vínculos do tenant BarberLeo (somente leitura).
+--     Cole e execute separadamente no SQL Editor para inspecionar as linhas:
+--
+--     SELECT
+--       m.id,
+--       m.establishment_id,
+--       e.name            AS estabelecimento,
+--       m.user_id,
+--       u.email           AS usuario,
+--       m.role            AS cargo,
+--       m.is_active,
+--       m.created_at
+--     FROM public.establishment_members m
+--     JOIN public.establishments e ON e.id = m.establishment_id
+--     JOIN auth.users u ON u.id = m.user_id
+--     WHERE e.slug = 'barberleo'
+--     ORDER BY m.role, m.created_at;
+--
+-- (e) Vínculos duplicados de um mesmo usuário no mesmo estabelecimento
+--     (somente leitura):
+--
+--     SELECT establishment_id, user_id, count(*) AS ocorrencias
+--     FROM public.establishment_members
+--     GROUP BY establishment_id, user_id
+--     HAVING count(*) > 1;
+
+--------------------------------------------------------------------------------
 -- 5. Permissões de tabela: anon sem nada, authenticated somente leitura
 --------------------------------------------------------------------------------
 DO $$
@@ -430,10 +548,19 @@ BEGIN
         'upsert_profile_from_auth_user',
         'handle_new_user',
         'handle_new_establishment',
-        'set_updated_at'
+        'set_updated_at',
+        'validate_team_grants'
       )
   ) THEN
     RAISE EXCEPTION 'FALHA: funções internas ausentes no schema agenda_flow_private.';
+  END IF;
+
+  -- 8.1.0 O validador interno de cargo/permissões (migration 00008) é interno:
+  --        nenhum papel da API pode chamá-lo diretamente.
+  IF has_function_privilege('anon', 'agenda_flow_private.validate_team_grants(uuid, text, text[], uuid)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'agenda_flow_private.validate_team_grants(uuid, text, text[], uuid)', 'EXECUTE')
+     OR has_function_privilege('service_role', 'agenda_flow_private.validate_team_grants(uuid, text, text[], uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'FALHA: o validador interno de concessões é executável por um papel da API.';
   END IF;
 
   IF EXISTS (
@@ -444,7 +571,8 @@ BEGIN
         'upsert_profile_from_auth_user',
         'handle_new_user',
         'handle_new_establishment',
-        'set_updated_at'
+        'set_updated_at',
+        'validate_team_grants'
       )
   ) THEN
     RAISE EXCEPTION 'FALHA: funções internas ainda existem no schema public.';

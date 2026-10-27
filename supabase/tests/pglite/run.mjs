@@ -165,11 +165,143 @@ async function main() {
 
   console.log(`  ${JSON.stringify(summary.rows[0])}`)
 
+  await db.close()
+
+  const scenarioCode = await runCustomUniquenessScenario(migrationFiles)
+  if (scenarioCode !== 0) {
+    return scenarioCode
+  }
+
   const failures = results.filter((result) => result.status === 'fail')
 
   console.log(`\n${results.length - failures.length}/${results.length} verificações concluídas com sucesso.`)
 
   return failures.length === 0 ? 0 : 1
+}
+
+/**
+ * Cenário: a unicidade dos vínculos já está garantida por um objeto com NOME
+ * DIFERENTE do esperado pela migration 00008.
+ *
+ * A migration detecta a constraint/índice pelo conjunto de colunas (e não pelo
+ * nome) e comenta o objeto realmente existente. Este cenário prova que:
+ *   • a migration 00008 aplica sem falhar com uma constraint renomeada;
+ *   • a migration 00008 aplica sem falhar com um índice único (sem constraint);
+ *   • nenhum registro é excluído ou alterado;
+ *   • a unicidade continua em vigor (o vínculo duplicado é recusado).
+ */
+async function runCustomUniquenessScenario(migrationFiles) {
+  console.log('\nCenário: unicidade de vínculo garantida por objeto com nome diferente')
+
+  const target = '20250127000008_membership_integrity.sql'
+  const targetFile = migrationFiles.find((file) => file.startsWith('20250127000008'))
+
+  if (!targetFile) {
+    report('fail', `migration ${target} não encontrada`)
+    return 1
+  }
+
+  const variants = [
+    {
+      label: 'constraint renomeada',
+      prepare: `
+        ALTER TABLE public.establishment_members
+          RENAME CONSTRAINT establishment_members_establishment_id_user_id_key
+          TO uq_memberships_custom_name;
+      `,
+    },
+    {
+      label: 'índice único com nome próprio',
+      prepare: `
+        ALTER TABLE public.establishment_members
+          DROP CONSTRAINT establishment_members_establishment_id_user_id_key;
+        CREATE UNIQUE INDEX uq_memberships_custom_index
+          ON public.establishment_members (establishment_id, user_id);
+      `,
+    },
+  ]
+
+  for (const variant of variants) {
+    const db = await new PGlite()
+
+    try {
+      await db.exec(readFileSync(bootstrapFile, 'utf8'))
+
+      for (const file of migrationFiles) {
+        if (file === targetFile) continue
+        await db.exec(neutralizePgcryptoExtension(readFileSync(join(migrationsDir, file), 'utf8')))
+      }
+
+      await db.exec(variant.prepare)
+
+      // Dataset mínimo: um usuário com o vínculo de proprietário (criado pelo
+      // trigger de criação do estabelecimento).
+      await db.exec(`
+        INSERT INTO auth.users (id, email, email_confirmed_at)
+        VALUES ('11111111-1111-1111-1111-111111111111', 'cenario@agenda.flow.test', now());
+
+        INSERT INTO public.establishments (owner_id, name, slug, type)
+        VALUES (
+          '11111111-1111-1111-1111-111111111111',
+          'Barbearia Cenario',
+          'barbearia-cenario',
+          'barbershop'
+        );
+      `)
+
+      const before = await db.query('SELECT count(*)::int AS total FROM public.establishment_members')
+
+      await db.exec(neutralizePgcryptoExtension(readFileSync(join(migrationsDir, targetFile), 'utf8')))
+      report('ok', `00008 aplicada com ${variant.label} (sem falhar)`)
+
+      const after = await db.query('SELECT count(*)::int AS total FROM public.establishment_members')
+
+      if (after.rows[0].total !== before.rows[0].total) {
+        report('fail', `${variant.label}: a migration alterou a quantidade de vínculos`)
+        await db.close()
+        return 1
+      }
+
+      report('ok', `${variant.label}: nenhum vínculo foi excluído ou alterado`)
+
+      // A unicidade continua em vigor: um vínculo duplicado é recusado.
+      const duplicates = await db.query(`
+        DO $$
+        DECLARE
+          v_establishment uuid;
+          v_user uuid;
+        BEGIN
+          SELECT establishment_id, user_id INTO v_establishment, v_user
+          FROM public.establishment_members LIMIT 1;
+
+          BEGIN
+            INSERT INTO public.establishment_members (establishment_id, user_id, role)
+            VALUES (v_establishment, v_user, 'professional');
+            RAISE EXCEPTION 'Duplicated link was accepted';
+          EXCEPTION WHEN unique_violation THEN
+            RAISE NOTICE 'Duplicated link refused by the database.';
+          END;
+        END $$;
+      `)
+
+      if (!duplicates) {
+        report('fail', `${variant.label}: falha ao verificar a unicidade`)
+        await db.close()
+        return 1
+      }
+
+      report('ok', `${variant.label}: vínculo duplicado continua recusado pelo banco`)
+    } catch (error) {
+      report('fail', `${variant.label}: ${error.message}`)
+      console.log(lineContext(readFileSync(join(migrationsDir, targetFile), 'utf8'), error.position))
+      await db.close()
+      return 1
+    }
+
+    await db.close()
+  }
+
+  return 0
 }
 
 main()

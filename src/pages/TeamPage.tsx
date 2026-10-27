@@ -6,6 +6,7 @@ import { MemberPermissionsModal } from '../components/team/MemberPermissionsModa
 import { ConfirmDialog } from '../components/services/ConfirmDialog'
 import { SparkIcon, TeamIcon } from '../components/dashboard/icons'
 import { useAuth } from '../hooks/useAuth'
+import { useActiveEstablishment } from '../hooks/useActiveEstablishment'
 import {
   ASSIGNABLE_ROLES,
   INVITATION_STATUS_LABELS,
@@ -46,9 +47,8 @@ function initials(name: string): string {
 }
 
 export function TeamPage() {
-  const { currentEstablishment, establishments, user, refreshEstablishments } = useAuth()
-
-  const establishment = currentEstablishment ?? establishments[0]
+  const { user, refreshEstablishments } = useAuth()
+  const establishment = useActiveEstablishment()
   const isOwner = establishment?.role === 'owner'
 
   const [members, setMembers] = useState<TeamMember[]>([])

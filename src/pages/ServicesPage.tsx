@@ -4,7 +4,7 @@ import { DashboardLayout } from '../components/dashboard/DashboardLayout'
 import { ConfirmDialog } from '../components/services/ConfirmDialog'
 import { ServiceFormModal, type ServiceFormValues } from '../components/services/ServiceFormModal'
 import { ClockIcon, SparkIcon } from '../components/dashboard/icons'
-import { useAuth } from '../hooks/useAuth'
+import { useActiveEstablishment } from '../hooks/useActiveEstablishment'
 import {
   SERVICE_CATEGORIES,
   formatBRL,
@@ -24,9 +24,7 @@ function statusLabel(isActive: boolean): string {
 }
 
 export function ServicesPage() {
-  const { currentEstablishment, establishments } = useAuth()
-
-  const establishment = currentEstablishment ?? establishments[0]
+  const establishment = useActiveEstablishment()
 
   // Somente o proprietário administra o catálogo. A garantia real está no
   // banco (as RPCs recusam não-proprietários), mas a interface não deve

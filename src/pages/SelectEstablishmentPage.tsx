@@ -1,9 +1,41 @@
-import { Navigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
 
 import { useAuth } from '../hooks/useAuth'
+import { dedupeEstablishmentsById, isEstablishmentAuthorized } from '../lib/establishments'
 
 export function SelectEstablishmentPage() {
+  const navigate = useNavigate()
   const { user, isLoading, isAuthenticated, establishments, selectEstablishment } = useAuth()
+
+  // Proteção adicional da interface: cada estabelecimento aparece uma única
+  // vez, mesmo que o banco ainda possua vínculos inconsistentes.
+  const options = useMemo(() => dedupeEstablishmentsById(establishments), [establishments])
+
+  const handleSelect = useCallback(
+    (establishmentId: string) => {
+      // Só estabelecimentos da lista autorizada do usuário autenticado podem
+      // ser ativados.
+      const establishment = options.find((item) => item.id === establishmentId)
+
+      if (!establishment || !isEstablishmentAuthorized(options, establishmentId)) {
+        return
+      }
+
+      selectEstablishment(establishment)
+      navigate('/dashboard', { replace: true })
+    },
+    [navigate, options, selectEstablishment],
+  )
+
+  // Usuário com um único estabelecimento: a seleção é automática.
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) return
+    if (options.length !== 1) return
+
+    selectEstablishment(options[0])
+    navigate('/dashboard', { replace: true })
+  }, [isAuthenticated, isLoading, navigate, options, selectEstablishment])
 
   if (isLoading) {
     return (
@@ -20,13 +52,8 @@ export function SelectEstablishmentPage() {
     return <Navigate to="/login" replace />
   }
 
-  if (establishments.length === 0) {
+  if (options.length === 0) {
     return <Navigate to="/welcome" replace />
-  }
-
-  if (establishments.length === 1) {
-    selectEstablishment(establishments[0])
-    return <Navigate to="/dashboard" replace />
   }
 
   return (
@@ -41,12 +68,12 @@ export function SelectEstablishmentPage() {
         </div>
 
         <div className="establishment-list">
-          {establishments.map((establishment) => (
+          {options.map((establishment) => (
             <button
               key={establishment.id}
               type="button"
               className="establishment-card"
-              onClick={() => selectEstablishment(establishment)}
+              onClick={() => handleSelect(establishment.id)}
             >
               <span className="establishment-card__name">{establishment.name}</span>
               <span className="establishment-card__type">

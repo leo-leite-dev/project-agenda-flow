@@ -2,6 +2,8 @@ export type PostAuthRedirectInput = {
   isAuthenticated: boolean
   establishmentCount: number
   isLoadingEstablishments: boolean
+  /** Já existe um estabelecimento ativo escolhido pelo usuário. */
+  hasSelectedEstablishment?: boolean
   /** Caminho interno de retorno (ex.: aceite de convite). */
   nextPath?: string | null
 }
@@ -28,11 +30,13 @@ export function isSafeInternalPath(path: string | null | undefined): boolean {
  * - Authenticated but establishments still loading => wait.
  * - Authenticated with a safe internal next path => that path (ex.: invite).
  * - Authenticated with no establishment => /welcome.
+ * - Authenticated with an establishment already selected => /dashboard.
  * - Authenticated with exactly one establishment => /dashboard.
  * - Authenticated with multiple establishments => /select-establishment.
  */
 export function resolvePostAuthRedirect(input: PostAuthRedirectInput): PostAuthRedirectResult {
-  const { isAuthenticated, establishmentCount, isLoadingEstablishments, nextPath } = input
+  const { isAuthenticated, establishmentCount, isLoadingEstablishments, hasSelectedEstablishment, nextPath } =
+    input
 
   if (!isAuthenticated) {
     return { kind: 'error' }
@@ -50,7 +54,7 @@ export function resolvePostAuthRedirect(input: PostAuthRedirectInput): PostAuthR
     return { kind: 'redirect', path: '/welcome' }
   }
 
-  if (establishmentCount === 1) {
+  if (hasSelectedEstablishment || establishmentCount === 1) {
     return { kind: 'redirect', path: '/dashboard' }
   }
 

@@ -149,9 +149,22 @@ export function onAuthStateChange(callback: (event: string, session: Session | n
 }
 
 /**
- * Fetches all establishments the current user belongs to.
+ * Fetches the establishments the AUTHENTICATED user belongs to.
+ *
+ * The filter by `user_id` is mandatory: the RLS policy of
+ * `public.establishment_members` also allows a member to read the links of the
+ * other members of the same establishment (needed by the team screen). Without
+ * this filter, the query returned the links of OTHER people and the same
+ * establishment appeared once per member of the tenant.
+ *
+ * The remaining filters (link active and establishment active) are applied on
+ * the links of the authenticated user only.
  */
-export async function getUserEstablishments() {
+export async function getUserEstablishments(userId: string) {
+  if (!userId) {
+    return []
+  }
+
   const { data, error } = await supabase
     .from('establishment_members')
     .select(
@@ -173,6 +186,7 @@ export async function getUserEstablishments() {
       )
     `,
     )
+    .eq('user_id', userId)
     .eq('is_active', true)
     .order('created_at', { ascending: false })
 
@@ -188,6 +202,9 @@ export async function getUserEstablishments() {
           : item.establishments
 
         if (!establishment) return null
+
+        // Estabelecimento desativado não é acessível ao usuário.
+        if (establishment.is_active === false) return null
 
         return {
           ...establishment,

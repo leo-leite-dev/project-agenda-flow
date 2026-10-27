@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import type { User } from '@supabase/supabase-js'
 
 import { useAuth } from '../hooks/useAuth'
+import { useActiveEstablishment } from '../hooks/useActiveEstablishment'
 import { DashboardLayout } from '../components/dashboard/DashboardLayout'
 import type { UserEstablishment } from '../contexts/AuthContext'
 import {
@@ -282,9 +283,8 @@ function OverviewContent({ establishment, user }: OverviewContentProps) {
  * usa apenas os dados reais da sessão autorizada por RLS.
  */
 export function DashboardPage() {
-  const { user, establishments, currentEstablishment } = useAuth()
-
-  const establishment = currentEstablishment ?? establishments[0]
+  const { user } = useAuth()
+  const establishment = useActiveEstablishment()
 
   return (
     <DashboardLayout>

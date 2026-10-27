@@ -13,6 +13,14 @@ import {
   signUpWithEmail,
 } from '../lib/supabase'
 import type { Establishment } from '../lib/supabase'
+import {
+  clearPersistedEstablishmentId,
+  dedupeEstablishmentsById,
+  isEstablishmentAuthorized,
+  persistEstablishmentId,
+  readPersistedEstablishmentId,
+  resolveActiveEstablishment,
+} from '../lib/establishments'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthContextValue['user']>(null)
@@ -22,22 +30,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentEstablishment, setCurrentEstablishment] = useState<UserEstablishment | null>(null)
   const [isLoadingEstablishments, setIsLoadingEstablishments] = useState(false)
   const profileEnsuredRef = useRef(false)
+  const userId = user?.id ?? null
 
-  const loadEstablishments = useCallback(async () => {
+  /**
+   * Carrega os vínculos do usuário AUTENTICADO.
+   *
+   * A consulta é filtrada pelo `user_id` da sessão (ver
+   * `getUserEstablishments`): vínculos de outras pessoas nunca chegam ao
+   * estado da aplicação. A deduplicação por `establishment_id` é apenas uma
+   * proteção adicional da interface.
+   */
+  const loadEstablishments = useCallback(async (sessionUserId: string) => {
     setIsLoadingEstablishments(true)
     try {
-      const data = await getUserEstablishments()
-      setEstablishments(data)
+      const data = await getUserEstablishments(sessionUserId)
+      const unique = dedupeEstablishmentsById(data)
 
-      if (data.length === 1 && !currentEstablishment) {
-        setCurrentEstablishment(data[0])
-      }
+      setEstablishments(unique)
+      setCurrentEstablishment((current) =>
+        resolveActiveEstablishment(unique, {
+          currentId: current?.id,
+          persistedId: readPersistedEstablishmentId(sessionUserId),
+        }),
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao carregar estabelecimentos.')
     } finally {
       setIsLoadingEstablishments(false)
     }
-  }, [currentEstablishment])
+  }, [])
 
   /**
    * Guarantees that the authenticated user has a profile in `public.profiles`.
@@ -55,10 +76,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const loadUserData = useCallback(async () => {
-    await ensureProfile()
-    await loadEstablishments()
-  }, [ensureProfile, loadEstablishments])
+  const loadUserData = useCallback(
+    async (sessionUserId: string) => {
+      await ensureProfile()
+      await loadEstablishments(sessionUserId)
+    },
+    [ensureProfile, loadEstablishments],
+  )
 
   useEffect(() => {
     let isMounted = true
@@ -84,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false)
 
       if (session?.user) {
-        void loadUserData()
+        void loadUserData(session.user.id)
       } else {
         setEstablishments([])
         setCurrentEstablishment(null)
@@ -97,7 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!isMounted) return
         setUser(session?.user ?? null)
         if (session?.user) {
-          await loadUserData()
+          await loadUserData(session.user.id)
         }
       } catch {
         // Do not surface internals; the auth listener / UI will handle state.
@@ -135,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { user: signedInUser } = await signInWithEmail(email, password)
       setUser(signedInUser)
       if (signedInUser) {
-        await loadUserData()
+        await loadUserData(signedInUser.id)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao entrar.')
@@ -152,7 +176,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const result = await signUpWithEmail(email, password, fullName)
       setUser(result.user ?? null)
       if (result.user) {
-        await loadUserData()
+        await loadUserData(result.user.id)
       }
       return result
     } catch (err) {
@@ -168,6 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     try {
       await signOut()
+      clearPersistedEstablishmentId(userId)
       setUser(null)
       setEstablishments([])
       setCurrentEstablishment(null)
@@ -178,7 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [userId])
 
   const handleCreateEstablishment = useCallback(
     async (input: {
@@ -194,24 +219,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError(null)
       try {
         const id = await createEstablishmentRpc(input)
-        await loadEstablishments()
+        if (userId) {
+          await loadEstablishments(userId)
+        }
         return id
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Falha ao criar estabelecimento.')
         throw err
       }
     },
-    [loadEstablishments],
+    [loadEstablishments, userId],
   )
 
-  const handleSelectEstablishment = useCallback((establishment: UserEstablishment | null) => {
-    setCurrentEstablishment(establishment)
-  }, [])
+  /**
+   * Ativa o estabelecimento escolhido.
+   *
+   * A ativação só acontece para um estabelecimento da lista autorizada do
+   * usuário autenticado — a checagem é repetida aqui (e na tela de seleção)
+   * para que nenhum vínculo alheio possa ser ativado por engano.
+   */
+  const handleSelectEstablishment = useCallback(
+    (establishment: UserEstablishment | null) => {
+      if (!establishment) {
+        setCurrentEstablishment(null)
+        return
+      }
+
+      if (!isEstablishmentAuthorized(establishments, establishment.id)) {
+        return
+      }
+
+      setCurrentEstablishment(establishment)
+      persistEstablishmentId(userId, establishment.id)
+    },
+    [establishments, userId],
+  )
 
   const handleRefreshEstablishments = useCallback(async () => {
     setError(null)
-    await loadEstablishments()
-  }, [loadEstablishments])
+    if (!userId) return
+    await loadEstablishments(userId)
+  }, [loadEstablishments, userId])
 
   const clearError = useCallback(() => setError(null), [])
 

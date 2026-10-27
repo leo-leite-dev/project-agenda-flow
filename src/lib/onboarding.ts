@@ -51,6 +51,8 @@ export interface OnboardingInput {
   isLoadingEstablishments: boolean
   isLoadingInvitations: boolean
   establishmentCount: number
+  /** Existe um estabelecimento ativo já escolhido pelo usuário. */
+  hasActiveEstablishment?: boolean
   /** Existe convite pendente para a identidade autenticada. */
   hasPendingInvitation: boolean
   /** Caminho do convite em andamento, quando conhecido. */
@@ -81,7 +83,9 @@ export type OnboardingDecision =
  *    ausência definitiva de vínculos);
  *  • com convite pendente → priorizar o aceite do convite, nunca exigir a
  *    criação de um estabelecimento;
- *  • com vários vínculos → seleção;
+ *  • com um estabelecimento já escolhido → dashboard (o usuário com vários
+ *    vínculos precisa poder acessar o estabelecimento escolhido);
+ *  • com vários vínculos e sem escolha → seleção;
  *  • com um vínculo → dashboard;
  *  • sem vínculos e sem convite → criação do próprio estabelecimento.
  */
@@ -92,6 +96,7 @@ export function resolveOnboardingDecision(input: OnboardingInput): OnboardingDec
     isLoadingEstablishments,
     isLoadingInvitations,
     establishmentCount,
+    hasActiveEstablishment,
     hasPendingInvitation,
     pendingInvitationPath,
   } = input
@@ -102,6 +107,10 @@ export function resolveOnboardingDecision(input: OnboardingInput): OnboardingDec
 
   if (!isAuthenticated) {
     return { kind: 'login' }
+  }
+
+  if (hasActiveEstablishment && establishmentCount > 0) {
+    return { kind: 'dashboard' }
   }
 
   if (establishmentCount > 1) {

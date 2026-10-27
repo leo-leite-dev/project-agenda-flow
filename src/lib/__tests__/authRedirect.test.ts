@@ -52,6 +52,17 @@ describe('resolvePostAuthRedirect', () => {
       }),
     ).toEqual({ kind: 'redirect', path: '/select-establishment' })
   })
+
+  it('redirects to /dashboard when an establishment was already selected', () => {
+    expect(
+      resolvePostAuthRedirect({
+        isAuthenticated: true,
+        establishmentCount: 2,
+        isLoadingEstablishments: false,
+        hasSelectedEstablishment: true,
+      }),
+    ).toEqual({ kind: 'redirect', path: '/dashboard' })
+  })
 })
 describe('resolvePostAuthRedirect com caminho de retorno (convite)', () => {
   it('redireciona para o caminho interno informado', () => {

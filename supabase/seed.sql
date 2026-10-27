@@ -505,6 +505,48 @@ BEGIN
   ASSERT agenda_flow_private.unexpected_default_privileges() = ARRAY[]::text[],
     'Default privileges must be clean again after the revocation';
 
+  --------------------------------------------------------------------------
+  -- Integridade dos vínculos: unicidade (establishment_id, user_id).
+  --
+  -- Regra de negócio: um usuário possui no máximo um vínculo efetivo por
+  -- estabelecimento (com um cargo definido nesse vínculo). O mesmo usuário
+  -- pode ter vínculos em empresas diferentes.
+  --------------------------------------------------------------------------
+  ASSERT (
+    SELECT count(*) > 0
+    FROM (
+      SELECT c.oid
+      FROM pg_constraint c
+      WHERE c.conrelid = 'public.establishment_members'::regclass
+        AND c.contype = 'u'
+        AND (
+          SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+          FROM unnest(c.conkey) AS k(attnum)
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+        ) = ARRAY['establishment_id', 'user_id']
+      UNION ALL
+      SELECT i.indexrelid
+      FROM pg_index i
+      WHERE i.indrelid = 'public.establishment_members'::regclass
+        AND i.indisunique
+        AND i.indisvalid
+        AND i.indpred IS NULL
+        AND (
+          SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+          FROM unnest(i.indkey::smallint[]) AS k(attnum)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+        ) = ARRAY['establishment_id', 'user_id']
+    ) AS uniques
+  ), 'public.establishment_members must guarantee one link per (establishment_id, user_id)';
+
+  -- Nenhum vínculo duplicado existe nos dados de teste.
+  ASSERT NOT EXISTS (
+    SELECT 1
+    FROM public.establishment_members
+    GROUP BY establishment_id, user_id
+    HAVING count(*) > 1
+  ), 'No establishment may have duplicated links for the same user';
+
   RAISE NOTICE 'Least privilege, grants and RLS assertions passed.';
 END $$;
 
@@ -579,6 +621,11 @@ DECLARE
   v_token_manager text;
   v_token_prof text;
   v_token_prof_b text;
+  v_token_owner_self text;
+  v_token_prof_again text;
+  v_token_manager2 text;
+  v_token_delegated text;
+  v_token_owner_permissions text;
 BEGIN
   -- Garante que o cenário roda com o papel da API, e não como dono das
   -- tabelas (o dono ignora RLS e tornaria as asserções vazias).
@@ -1382,11 +1429,14 @@ BEGIN
   END;
 
   -- Test 41: an invitation of A cannot be accepted by a different identity.
+  -- O contato convidado ainda NÃO é membro de A (pertence a outro
+  -- estabelecimento), de modo que a recusa venha da verificação de identidade
+  -- e não da regra de vínculo já existente.
   PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
   PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
 
   v_token_identity := public.create_establishment_invitation(
-    v_est_a, 'prof-a@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+    v_est_a, 'legacy-user-2@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
   );
 
   PERFORM set_config('request.jwt.claim.sub', v_prof_b::text, true);
@@ -1443,7 +1493,567 @@ BEGIN
   ASSERT (SELECT count(*) FROM public.get_my_pending_invitations()) = 0,
     'The RPC must NOT expose invitations addressed to other identities';
 
+  --------------------------------------------------------------------------
+  -- Test 45: o proprietário não pode ser convidado para a própria empresa.
+  --
+  -- O convite é recusado NA ORIGEM (create_establishment_invitation) e, se
+  -- ainda assim existir um convite pendente, o aceite é recusado sem criar
+  -- vínculo e sem alterar o cargo de proprietário.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'owner-a@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner should NOT be invited to the own establishment';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- O convite recusado não deixou nenhum registro pendente para o dono.
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_invitations
+    WHERE establishment_id = v_est_a
+      AND email = 'owner-a@agenda.flow.test'
+      AND accepted_at IS NULL
+      AND cancelled_at IS NULL
+  ), 'A refused invitation to the owner must NOT be persisted';
+
+  -- O vínculo de proprietário continua único e com o cargo intacto.
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 1, 'The owner must keep exactly one link in the establishment';
+
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 'owner', 'The owner role must be preserved';
+
+  ASSERT public.is_establishment_owner(v_est_a) = true,
+    'The owner must keep the owner privileges';
+
+  --------------------------------------------------------------------------
+  -- Test 46: quem já pertence ao estabelecimento não cria um segundo vínculo.
+  --
+  -- Um convite forçado (criado fora do fluxo normal) é recusado no aceite:
+  -- nenhum vínculo é criado, nenhum cargo é trocado ou rebaixado. O cenário
+  -- completo está na seção 3.2 (o convite forjado é inserido pelo dono do
+  -- banco, porque o role da API não tem escrita direta).
+  --------------------------------------------------------------------------
+
+  --------------------------------------------------------------------------
+  -- Test 50: o fluxo comum de convites nunca cria outro PROPRIETÁRIO.
+  --
+  -- A transferência de propriedade não faz parte desta etapa: o cargo
+  -- 'owner' não é concedível por convite, nem pelo proprietário, nem pelo
+  -- gerente. O proprietário atual e establishments.owner_id são preservados.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'segundo-owner@agenda.flow.test', NULL, 'owner', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invitation should NOT create another owner';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Um gerente também não pode criar um proprietário.
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'segundo-owner@agenda.flow.test', NULL, 'owner', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT create an owner';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Nenhum convite pendente carrega o cargo de proprietário.
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_invitations
+    WHERE establishment_id = v_est_a AND role = 'owner'
+  ), 'No invitation may carry the owner role';
+
+  -- O vínculo e o cargo do proprietário seguem intactos.
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 1, 'The owner must keep exactly one link in the establishment';
+
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 'owner', 'The owner role must be preserved';
+
+  ASSERT (
+    SELECT owner_id FROM public.establishments WHERE id = v_est_a
+  ) = v_owner_a, 'establishments.owner_id must be preserved';
+
+  --------------------------------------------------------------------------
+  -- Test 51: um gerente não cria outros administradores.
+  --------------------------------------------------------------------------
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'gerente-novo@agenda.flow.test', NULL, 'manager', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT invite another manager';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- O proprietário pode convidar um gerente (carga de administrador).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_manager2 := public.create_establishment_invitation(
+    v_est_a, 'gerente-novo@agenda.flow.test', NULL, 'manager', ARRAY['appointments.read'], '7 days'::interval
+  );
+
+  ASSERT v_token_manager2 IS NOT NULL,
+    'The owner must be able to invite a manager with valid permissions';
+
+  --------------------------------------------------------------------------
+  -- Test 52: permissões inválidas ou não autorizadas são recusadas NO BANCO.
+  --
+  -- O parâmetro p_permissions é validado pelo PostgreSQL: apenas chaves
+  -- previstas no schema do projeto são aceitas e o gerente concede somente
+  -- as permissões que possui.
+  --------------------------------------------------------------------------
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'permissao-invalida@agenda.flow.test', NULL, 'professional',
+      ARRAY['permissions.inventadas'], '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invalid permission should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- O gerente tenta conceder uma permissão que não possui (acima das suas).
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'escalonamento@agenda.flow.test', NULL, 'professional',
+      ARRAY['finances.delete'], '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT grant permissions that it does not hold';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- O gerente pode delegar uma permissão que possui (appointments.read).
+  v_token_delegated := public.create_establishment_invitation(
+    v_est_a, 'delegado@agenda.flow.test', NULL, 'professional',
+    ARRAY['appointments.read'], '7 days'::interval
+  );
+
+  ASSERT v_token_delegated IS NOT NULL,
+    'A manager must be able to delegate a permission that it holds';
+
+  -- O proprietário pode conceder qualquer chave válida da matriz.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_owner_permissions := public.create_establishment_invitation(
+    v_est_a, 'permissao-valida@agenda.flow.test', NULL, 'professional',
+    ARRAY['finances.delete', 'settings.write'], '7 days'::interval
+  );
+
+  ASSERT v_token_owner_permissions IS NOT NULL,
+    'The owner must be able to grant any valid permission of the project matrix';
+
+  --------------------------------------------------------------------------
+  -- Test 53: isolamento entre estabelecimentos no fluxo de convites.
+  --
+  -- Um gerente de A não convida em B e nenhum convite de A cria vínculo em B.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_b, 'intruso-b@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager of A should NOT invite into B';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE establishment_id = v_est_b AND user_id = v_manager_a
+  ), 'A manager of A must NOT gain a link in B through an invitation';
+
   RAISE NOTICE 'All application assertions passed.';
+END $$;
+
+RESET ROLE;
+
+--------------------------------------------------------------------------------
+-- 3.2 Convites forjados (dono do banco)
+--------------------------------------------------------------------------------
+-- Simula convites que chegaram FORA do fluxo normal (e-mail antigo, banco
+-- restaurado, convite criado por outra ferramenta) endereçados a pessoas que
+-- JÁ pertencem ao estabelecimento. O fluxo normal (create_establishment_
+-- invitation) recusa esse tipo de convite; aqui o registro é inserido pelo
+-- dono do banco para provar que o ACEITE também é seguro.
+--
+-- Os tokens ficam disponíveis para a seção seguinte via set_config.
+DO $$
+DECLARE
+  v_est_a uuid;
+  v_owner_a uuid := '11111111-1111-1111-1111-111111111111';
+  v_prof_a  uuid := '22222222-2222-2222-2222-222222222222';
+  v_manager_a uuid := '33333333-3333-3333-3333-333333333333';
+  v_email_user uuid := '77777777-7777-7777-7777-777777777777';
+  v_token_owner_self text;
+  v_token_prof_again text;
+  v_token_escalation_owner text;
+  v_token_escalation_permissions text;
+  v_token_escalation_invalid text;
+  v_token_escalation_manager text;
+BEGIN
+  SELECT id INTO v_est_a FROM public.establishments WHERE slug = 'barbearia-alpha';
+
+  v_token_owner_self := encode(
+    sha256(convert_to(
+      'agenda-flow-owner-self-' || v_est_a::text || '-' || v_owner_a::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  v_token_prof_again := encode(
+    sha256(convert_to(
+      'agenda-flow-prof-again-' || v_est_a::text || '-' || v_prof_a::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  -- Convite antigo que tentaria transferir a propriedade.
+  v_token_escalation_owner := encode(
+    sha256(convert_to(
+      'agenda-flow-escalation-owner-' || v_est_a::text || '-' || v_email_user::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  -- Convite antigo com permissões acima das do concedente (gerente).
+  v_token_escalation_permissions := encode(
+    sha256(convert_to(
+      'agenda-flow-escalation-permissions-' || v_est_a::text || '-' || v_email_user::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  -- Convite antigo com chave de permissão inexistente.
+  v_token_escalation_invalid := encode(
+    sha256(convert_to(
+      'agenda-flow-escalation-invalid-' || v_est_a::text || '-' || v_email_user::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  -- Convite antigo de gerente criado por um gerente (carga de administrador).
+  v_token_escalation_manager := encode(
+    sha256(convert_to(
+      'agenda-flow-escalation-manager-' || v_est_a::text || '-' || v_email_user::text,
+      'utf8'
+    )),
+    'hex'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'owner-a@agenda.flow.test', v_token_owner_self, 'professional', '{}',
+    v_owner_a, now() + interval '7 days'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'prof-a@agenda.flow.test', v_token_prof_again, 'manager', '{}',
+    v_owner_a, now() + interval '7 days'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'email-user@agenda.flow.test', v_token_escalation_owner, 'owner', '{}',
+    v_owner_a, now() + interval '7 days'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'email-user@agenda.flow.test', v_token_escalation_permissions, 'professional',
+    ARRAY['finances.delete'], v_manager_a, now() + interval '7 days'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'email-user@agenda.flow.test', v_token_escalation_invalid, 'professional',
+    ARRAY['permissions.inventadas'], v_owner_a, now() + interval '7 days'
+  );
+
+  INSERT INTO public.establishment_invitations (
+    establishment_id, email, token_hash, role, permissions, invited_by, expires_at
+  ) VALUES (
+    v_est_a, 'email-user@agenda.flow.test', v_token_escalation_manager, 'manager', '{}',
+    v_manager_a, now() + interval '7 days'
+  );
+
+  PERFORM set_config('agenda_flow.token_owner_self', v_token_owner_self, true);
+  PERFORM set_config('agenda_flow.token_prof_again', v_token_prof_again, true);
+  PERFORM set_config('agenda_flow.token_escalation_owner', v_token_escalation_owner, true);
+  PERFORM set_config('agenda_flow.token_escalation_permissions', v_token_escalation_permissions, true);
+  PERFORM set_config('agenda_flow.token_escalation_invalid', v_token_escalation_invalid, true);
+  PERFORM set_config('agenda_flow.token_escalation_manager', v_token_escalation_manager, true);
+
+  RAISE NOTICE 'Forced invitations created for the membership integrity scenarios.';
+END $$;
+
+SET LOCAL ROLE authenticated;
+
+DO $$
+DECLARE
+  v_est_a uuid;
+  v_est_b uuid;
+  v_owner_a uuid := '11111111-1111-1111-1111-111111111111';
+  v_prof_a  uuid := '22222222-2222-2222-2222-222222222222';
+  v_shared_user uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  v_email_user uuid := '77777777-7777-7777-7777-777777777777';
+  v_token_owner_self text;
+  v_token_prof_again text;
+  v_token_escalation_owner text;
+  v_token_escalation_permissions text;
+  v_token_escalation_invalid text;
+  v_token_escalation_manager text;
+BEGIN
+  -- A sessão herda as claims do bloco anterior: fixamos a identidade do
+  -- proprietário para ler o estabelecimento A (a RLS só revela o próprio
+  -- tenant).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  SELECT id INTO v_est_a FROM public.establishments WHERE slug = 'barbearia-alpha';
+
+  v_token_owner_self := current_setting('agenda_flow.token_owner_self');
+  v_token_prof_again := current_setting('agenda_flow.token_prof_again');
+  v_token_escalation_owner := current_setting('agenda_flow.token_escalation_owner');
+  v_token_escalation_permissions := current_setting('agenda_flow.token_escalation_permissions');
+  v_token_escalation_invalid := current_setting('agenda_flow.token_escalation_invalid');
+  v_token_escalation_manager := current_setting('agenda_flow.token_escalation_manager');
+
+  --------------------------------------------------------------------------
+  -- Test 46: o proprietário não aceita convite para a própria empresa.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_owner_self);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invitation should NOT create a second link';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 1, 'Accepting an invitation must NOT create a duplicated link';
+
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a
+  ) = 'owner', 'The owner must NOT be demoted by an invitation';
+
+  ASSERT public.is_establishment_owner(v_est_a) = true,
+    'The owner must keep the owner privileges after the refused invitation';
+
+  --------------------------------------------------------------------------
+  -- Test 47: o convidado que já é da equipe não cria vínculo duplicado.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_prof_again);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invitation should NOT create a second link';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_prof_a
+  ) = 1, 'The employee must keep exactly one link in the establishment';
+
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_prof_a
+  ) = 'professional',
+    'The employee role must NOT be silently replaced by an invitation';
+
+  --------------------------------------------------------------------------
+  -- Test 54: convites já existentes não provocam escalonamento de privilégios.
+  --
+  -- Convites forjados (criados fora do fluxo normal) são REVALIDADOS no
+  -- aceite: cargo de proprietário, permissões acima das do concedente e
+  -- chaves inexistentes são recusados — sem criar vínculo e sem conceder
+  -- qualquer privilégio.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_email_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"77777777-7777-7777-7777-777777777777","role":"authenticated","aud":"authenticated","email":"email-user@agenda.flow.test"}', true);
+
+  -- (a) Convite antigo com cargo de proprietário (transferência de propriedade).
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_escalation_owner);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'An old invitation must NOT transfer the ownership';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- (b) Convite antigo com permissões acima das do concedente (gerente).
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_escalation_permissions);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'An old invitation must NOT grant permissions above the granter';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- (c) Convite antigo com chave de permissão inexistente.
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_escalation_invalid);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'An old invitation must NOT grant an unknown permission';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- (d) Convite antigo de gerente criado por um gerente.
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_escalation_manager);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'An old invitation must NOT create another administrator';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Nenhum vínculo foi criado e nenhuma permissão foi concedida.
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_email_user
+  ), 'A refused escalation must NOT create a link';
+
+  ASSERT NOT EXISTS (
+    SELECT 1
+    FROM public.member_permissions mp
+    JOIN public.establishment_members m ON m.id = mp.member_id
+    WHERE m.establishment_id = v_est_a
+      AND m.user_id = v_email_user
+  ), 'A refused escalation must NOT grant permissions';
+
+  -- O recusado não ganhou acesso a nenhum estabelecimento.
+  ASSERT (SELECT count(*) FROM public.establishments) = 0,
+    'A refused invitation must NOT grant access to any establishment';
+
+  -- O proprietário e o cargo de proprietário seguem intactos.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_owner_a AND role = 'owner'
+  ) = 1, 'The owner link must be preserved after the refused escalations';
+
+  ASSERT (
+    SELECT owner_id FROM public.establishments WHERE id = v_est_a
+  ) = v_owner_a, 'establishments.owner_id must be preserved';
+
+  --------------------------------------------------------------------------
+  -- Test 55: isolamento entre estabelecimentos após as recusas.
+  --
+  -- O profissional de A enxerga apenas o próprio tenant: nem o estabelecimento
+  -- nem os vínculos de B são visíveis.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  ASSERT (SELECT count(*) FROM public.establishments) = 1,
+    'A member of A must see only its own establishment';
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishments WHERE slug = 'salao-beta'
+  ), 'A member of A must NOT read the establishment of another tenant';
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE user_id = v_prof_a
+  ) = 1, 'A member of A must NOT have a link in another tenant';
+
+  --------------------------------------------------------------------------
+  -- Test 48: a listagem do frontend (vínculos do usuário autenticado) retorna
+  -- UMA linha por estabelecimento — é o que evita a empresa duplicada.
+  --
+  -- A RLS permite que um membro leia os vínculos dos colegas do tenant (necessário
+  -- para a tela de equipe). A consulta do frontend filtra por user_id: por isso
+  -- o profissional de A enxerga apenas o PRÓPRIO vínculo, mesmo com outros
+  -- membros no mesmo estabelecimento.
+  --------------------------------------------------------------------------
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE user_id = v_prof_a AND is_active = true
+  ) = 1, 'The listing of the authenticated user must return a single link';
+
+  ASSERT (
+    SELECT count(DISTINCT establishment_id) FROM public.establishment_members
+    WHERE user_id = v_prof_a AND is_active = true
+  ) = 1, 'The listing of the authenticated user must not repeat establishments';
+
+  -- O cargo visto pelo frontend é o do PRÓPRIO vínculo (nunca o do colega).
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE user_id = v_prof_a AND is_active = true
+  ) = 'professional',
+    'The role exposed to the frontend must be the role of the own link';
+
+  -- Isolamento multi-tenant: o profissional de A não enxerga vínculos de B.
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE user_id = v_prof_a AND establishment_id <> v_est_a
+  ), 'The user must NOT have links to another tenant';
+
+  --------------------------------------------------------------------------
+  -- Test 49: vínculo desativado não aparece na listagem e não dá acesso.
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_shared_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aud":"authenticated","email":"shared@agenda.flow.test"}', true);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_members
+    WHERE user_id = v_shared_user AND is_active = true
+  ) = 1, 'A deactivated link must NOT appear in the listing of the user';
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishments WHERE id = v_est_a
+  ), 'A deactivated link must NOT grant access to the establishment';
+
+  RAISE NOTICE 'Membership integrity assertions passed.';
 END $$;
 
 RESET ROLE;

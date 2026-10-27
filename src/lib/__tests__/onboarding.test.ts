@@ -61,6 +61,26 @@ describe('resolveOnboardingDecision', () => {
     })
   })
 
+  it('com vários vínculos e um estabelecimento já escolhido: entra no dashboard', () => {
+    expect(
+      resolveOnboardingDecision({
+        ...base,
+        establishmentCount: 3,
+        hasActiveEstablishment: true,
+      }),
+    ).toEqual({ kind: 'dashboard' })
+  })
+
+  it('com um vínculo escolhido que não está na lista: volta a exigir a escolha', () => {
+    expect(
+      resolveOnboardingDecision({
+        ...base,
+        establishmentCount: 0,
+        hasActiveEstablishment: true,
+      }),
+    ).toEqual({ kind: 'welcome' })
+  })
+
   it('não autenticado: leva ao login', () => {
     expect(resolveOnboardingDecision({ ...base, isAuthenticated: false })).toEqual({
       kind: 'login',

@@ -7,7 +7,8 @@ import { resolvePostAuthRedirect } from '../lib/authRedirect'
 export function AuthCallbackPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { isAuthenticated, isLoading, isLoadingEstablishments, establishments } = useAuth()
+  const { isAuthenticated, isLoading, isLoadingEstablishments, establishments, currentEstablishment } =
+    useAuth()
   const didRedirect = useRef(false)
   const nextPath = searchParams.get('next')
 
@@ -30,9 +31,16 @@ export function AuthCallbackPage() {
         isAuthenticated,
         establishmentCount: establishments.length,
         isLoadingEstablishments,
+        hasSelectedEstablishment: Boolean(currentEstablishment),
         nextPath,
       }),
-    [isAuthenticated, establishments, isLoadingEstablishments, nextPath],
+    [
+      isAuthenticated,
+      establishments,
+      isLoadingEstablishments,
+      currentEstablishment,
+      nextPath,
+    ],
   )
 
   useEffect(() => {

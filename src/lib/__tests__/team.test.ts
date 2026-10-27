@@ -43,6 +43,13 @@ describe('cargos da equipe', () => {
     expect(ASSIGNABLE_ROLES).not.toContain('owner')
     expect(ASSIGNABLE_ROLES).toEqual(['manager', 'professional', 'receptionist'])
   })
+
+  it('espelha os cargos aceitos pelo banco no fluxo de convites', () => {
+    // O PostgreSQL (agenda_flow_private.validate_team_grants) aceita
+    // exatamente estes cargos por convite: a propriedade não é transferida.
+    expect([...ASSIGNABLE_ROLES].sort()).toEqual(['manager', 'professional', 'receptionist'])
+    expect(ASSIGNABLE_ROLES).not.toContain('owner')
+  })
 })
 
 describe('permissões granulares', () => {
@@ -63,6 +70,32 @@ describe('permissões granulares', () => {
       'settings',
     ])
     expect(permissionLabel('clients.read')).toBe('Clientes — Visualizar')
+  })
+
+  it('usa exatamente as chaves aceitas pelo banco na matriz do projeto', () => {
+    // A lista espelha agenda_flow_private.validate_team_grants (migration
+    // 00008): qualquer chave fora daqui é recusada pelo PostgreSQL.
+    expect([...ALL_PERMISSION_KEYS].sort()).toEqual(
+      [
+        'appointments.read',
+        'appointments.write',
+        'appointments.delete',
+        'clients.read',
+        'clients.write',
+        'clients.delete',
+        'finances.read',
+        'finances.write',
+        'finances.delete',
+        'services.read',
+        'services.write',
+        'services.delete',
+        'staff.read',
+        'staff.write',
+        'staff.delete',
+        'settings.read',
+        'settings.write',
+      ].sort(),
+    )
   })
 })
 

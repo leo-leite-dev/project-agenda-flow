@@ -41,6 +41,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     isLoadingEstablishments,
     isLoadingInvitations,
     establishmentCount: establishments.length,
+    hasActiveEstablishment: Boolean(currentEstablishment),
     hasPendingInvitation,
     pendingInvitationPath,
   })

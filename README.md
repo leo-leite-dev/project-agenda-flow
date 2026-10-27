@@ -36,7 +36,7 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Autenticação com e-mail e senha | Login e cadastro tradicionais, com confirmação de e-mail no Supabase. |
 | Gerenciamento de sessão | Contexto de autenticação (`AuthProvider`), hook `useAuth`, proteção de rotas e logout. |
 | Cadastro de estabelecimentos | Formulário para cadastrar barbearias/salões (nome, tipo, contato, endereço) com criação atômica do vínculo de proprietário. |
-| Seleção de estabelecimento | Tela de seleção quando o usuário possui mais de um vínculo; troca de estabelecimento pelo cabeçalho do dashboard. |
+| Seleção de estabelecimento | Tela de seleção quando o usuário possui mais de um vínculo; cada estabelecimento aparece **uma única vez**, a listagem vem **exclusivamente dos vínculos do usuário autenticado** e a escolha é gravada no navegador (sobrevive à atualização da página). |
 | Identificação do estabelecimento ativo | Cabeçalho e visão geral exibem o nome, tipo e papel do estabelecimento ativo, sempre a partir dos dados reais da sessão. |
 | Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
 | Gestão de serviços (Etapa 5) | Catálogo por estabelecimento: cadastro em modal, edição, ativação/desativação lógica com confirmação, busca por nome, filtros por categoria e status, preços em centavos formatados em R$. Escritas por RPCs que validam autenticação e papel de proprietário no banco. |
@@ -51,7 +51,8 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Permissões versionadas | Privilégio mínimo registrado em migration: `authenticated` com leitura apenas, `anon` sem acesso, matriz de `EXECUTE` explícita por função e verificação automatizada do estado. |
 | Estrutura de convites de funcionários | Tabelas e RPCs de convites com token hasheado, prazo de validade, verificação de identidade e controle de utilização única (interface em desenvolvimento). |
 | Testes de integração do banco | Runner com PostgreSQL real (PGlite) que aplica as migrations e executa as asserções de RLS, multi-tenant e integridade de perfis (`npm run test:db`). |
-| Auditoria do banco | Script somente leitura (`supabase/tests/verify_remote.sql`) que valida perfis, trigger, permissões, RLS e default privileges. |
+| Auditoria do banco | Script somente leitura (`supabase/tests/verify_remote.sql`) que valida perfis, trigger, permissões, RLS, default privileges e a **integridade dos vínculos** (unicidade por usuário e estabelecimento). |
+| Auditoria de vínculos | Script somente leitura (`supabase/tests/audit_membership_links.sql`) que lista todos os vínculos, os **vínculos duplicados**, os estabelecimentos sem proprietário e as permissões que apontam para cada vínculo — base para a correção segura dos dados. |
 
 > Mecanismos de autorização e isolamento: o acesso a cada linha é decidido pelas políticas RLS (papéis `owner`, `manager`, `professional`, `receptionist`), as escritas passam por RPCs `SECURITY DEFINER` com validações atômicas e o role `authenticated` tem somente leitura nas tabelas de dados.
 
@@ -78,6 +79,20 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 - O proprietário não altera o próprio cargo nem desativa o próprio vínculo, e o estabelecimento sempre conserva um proprietário ativo.
 - **Permissões**: cargo, permissões refinadas (chaves já previstas no schema) e autorização real são coisas distintas — a garantia está nas políticas RLS e nas RPCs, não na interface.
 - **Onboarding**: quem tem convite pendente (para o e-mail confirmado) é levado ao aceite do convite, nunca a criar um estabelecimento. Quem não tem vínculo nem convite pode criar o próprio estabelecimento. O contexto do convite sobrevive ao cadastro, à confirmação de e-mail, ao login e à atualização da página.
+- **Cargos concedidos por convite**: apenas `manager`, `professional` e `receptionist`. A transferência de propriedade **não faz parte desta etapa** — o cargo `owner` nunca é concedido por convite (nem pelo próprio proprietário), e o proprietário é definido em `establishments.owner_id` e pelo trigger de criação do estabelecimento. O frontend nunca oferece `owner` na lista de cargos do convite, e o banco recusa a tentativa.
+- **Quem pode conceder o quê**: somente o proprietário convida administradores (`manager`); um gerente convida apenas funcionários (`professional`, `receptionist`). Um gerente também **não convida em outro estabelecimento**.
+- **Permissões do convite**: validadas **no PostgreSQL** (nunca apenas no frontend). Só são aceitas chaves da matriz do projeto (18 chaves de `appointments`, `clients`, `finances`, `services`, `staff` e `settings`) e um gerente concede **apenas as permissões que possui** (delegação); o proprietário pode conceder qualquer chave válida. Permissão desconhecida ou não autorizada é recusada com mensagem explícita.
+- **Convites já existentes**: são **revalidados no aceite** — um convite antigo (criado fora do fluxo atual) não consegue conceder cargo de proprietário nem permissões acima das do concedente.
+
+### Vínculos do usuário e seleção de estabelecimento — regras
+
+- **Um vínculo por estabelecimento**: um usuário possui **no máximo um vínculo efetivo** com determinado estabelecimento, com um cargo definido nesse vínculo. O mesmo usuário pode ter vínculos em **empresas diferentes**. A unicidade é garantida no banco pela constraint `UNIQUE (establishment_id, user_id)`.
+- **A listagem usa somente os vínculos do usuário autenticado**: a consulta de estabelecimentos filtra por `user_id` e por vínculo ativo. A RLS permite que um membro leia os vínculos dos colegas do mesmo tenant (necessário para a tela de equipe), por isso o filtro da aplicação é indispensável — sem ele, a mesma empresa apareceria uma vez por membro.
+- **Sem duplicidade visual**: a interface ainda deduplica por `establishment_id` como proteção adicional, sem esconder inconsistências do banco (o diagnóstico e a correção ficam no banco).
+- **Escolha do estabelecimento**: o clique valida o vínculo do usuário, ativa o estabelecimento, reconhece o cargo daquele vínculo e redireciona para o dashboard. Usuários com um único estabelecimento entram direto; usuários com vários escolhem entre eles e a escolha é preservada após a atualização da página.
+- **Vínculo inativo ou conta sem vínculo**: o vínculo desativado não aparece na listagem e não concede acesso ao estabelecimento; a reativação é feita pelo proprietário na tela de equipe.
+- **Proteção do proprietário**: um convite para uma empresa da qual a pessoa **já faz parte** é recusado na origem (`create_establishment_invitation`), e o aceite nunca cria um segundo vínculo nem substitui/rebaixa o cargo existente. A alteração de cargo de um funcionário continua sendo exclusiva do fluxo administrativo.
+- **Convites não transferem propriedade**: apenas `manager`, `professional` e `receptionist` são concedidos por convite; `owner` é recusado pelo banco. Convites antigos são revalidados no aceite.
 
 ## Roadmap
 
@@ -159,9 +174,14 @@ agenda-flow/
 │   │   ├── 20250127000001_rls_policies.sql
 │   │   ├── 20250127000002_add_establishment_type.sql
 │   │   ├── 20250127000003_ensure_user_profiles.sql
-│   │   └── 20250127000004_grants_and_rls_review.sql
+│   │   ├── 20250127000004_grants_and_rls_review.sql
+│   │   ├── 20250127000005_establishment_services.sql
+│   │   ├── 20250127000006_team_management.sql
+│   │   ├── 20250127000007_pending_invitations.sql
+│   │   └── 20250127000008_membership_integrity.sql
 │   └── tests/            # Testes e auditoria do banco
-│       ├── verify_remote.sql   # Auditoria somente leitura (SQL Editor)
+│       ├── verify_remote.sql         # Auditoria somente leitura (SQL Editor)
+│       ├── audit_membership_links.sql # Auditoria somente leitura dos vínculos
 │       └── pglite/
 │           ├── bootstrap.sql    # Emulação do ambiente Supabase
 │           ├── run.mjs         # Runner de integração (npm run test:db)
@@ -188,9 +208,12 @@ agenda-flow/
     │   └── AuthProvider.tsx
     ├── env.d.ts          # Tipagens das variáveis de ambiente Vite
     ├── hooks/            # Hooks customizados
-    │   └── useAuth.ts
+    │   ├── useAuth.ts
+    │   ├── useActiveEstablishment.ts
+    │   └── usePendingInvitation.ts
     ├── lib/              # Utilitários e integrações
     │   ├── database.types.ts
+    │   ├── establishments.ts
     │   ├── supabase.ts
     │   └── utils.ts
     ├── pages/            # Páginas da aplicação
@@ -382,6 +405,11 @@ profiles (1:1)
 - Funções internas (triggers e helper de provisionamento) vivem no schema privado `agenda_flow_private`, que não é exposto ao PostgREST e não tem `USAGE` para os papéis da API.
 - Funções `SECURITY DEFINER` são criadas com `search_path` vazio e referências totalmente qualificadas (`schema.objeto`), eliminando dependência de search_path manipulável.
 - A criação de um estabelecimento sempre cria, de forma atômica, o vínculo do proprietário.
+- **Um vínculo por estabelecimento**: `public.establishment_members` garante `UNIQUE (establishment_id, user_id)` — o mesmo usuário não pode ter dois vínculos na mesma empresa, mas pode ter vínculos em empresas diferentes.
+- A listagem de estabelecimentos do usuário é sempre filtrada pelo `user_id` da sessão: vínculos de outras pessoas nunca chegam à interface, ainda que a RLS permita a leitura dos colegas do mesmo tenant.
+- Convites para pessoas que já pertencem ao estabelecimento são recusados na origem; o aceite de convite nunca cria um segundo vínculo nem rebaixa um proprietário.
+- O fluxo de convites **não transfere propriedade**: o cargo `owner` não é concedível por convite, `establishments.owner_id` é preservado e o vínculo do proprietário continua único.
+- As permissões concedidas por convite são validadas no PostgreSQL (matriz do projeto + delegação): chave desconhecida, permissão acima dos poderes do concedente ou convite de administrador por gerente são recusados.
 - Apenas proprietários podem promover/cadastrar outros proprietários ou gestores.
 - Convites armazenam hash SHA-256 do token; a identidade do destinatário é verificada no aceite.
 - Nenhuma chave privada do Supabase é armazenada no código ou exposta ao navegador.
@@ -462,7 +490,7 @@ git push origin main
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00005 registradas como aplicadas no Supabase remoto**. As migrations **00006 (gestão de equipe) e 00007 (convites pendentes do onboarding) foram aplicadas em 27/10/2026**.
+As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00008 registradas como aplicadas no Supabase remoto**.
 
 Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
 
@@ -478,7 +506,9 @@ Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez 
 | 4 | `20250127000003_ensure_user_profiles.sql` | Provisionamento garantido de perfis, backfill idempotente, `ensure_profile()`, autocorreção em `create_establishment`, schema privado para as funções internas, hardening do `search_path` e matriz de `EXECUTE`. |
 | 5 | `20250127000004_grants_and_rls_review.sql` | Privilégio mínimo nas tabelas (somente `SELECT` para `authenticated`), neutralização dos privilégios padrão herdados (`pg_default_acl`), revisão do RLS e verificação explícita de todo o estado de privilégios. |
 | 6 | `20250127000005_establishment_services.sql` | Catálogo de serviços por estabelecimento: tabela com preço em centavos, constraints, índices, RLS e RPCs de escrita exclusivas do proprietário. **Aplicação confirmada pelo histórico remoto.** |
-| 7 | `20250127000006_team_management.sql` | Gestão de equipe: RPCs de cargo, situação de vínculo e permissões (somente proprietário), bloqueio de convites duplicados, aceite de convite serializado com `FOR UPDATE`, isolamento do vínculo desativado e privilégio mínimo nas tabelas administrativas. **Ainda não aplicada no remoto.** |
+| 7 | `20250127000006_team_management.sql` | Gestão de equipe: RPCs de cargo, situação de vínculo e permissões (somente proprietário), bloqueio de convites duplicados, aceite de convite serializado com `FOR UPDATE`, isolamento do vínculo desativado e privilégio mínimo nas tabelas administrativas. **Aplicação confirmada pelo histórico remoto.** |
+| 8 | `20250127000007_pending_invitations.sql` | RPC `get_my_pending_invitations` (somente leitura) para priorizar o aceite do convite no onboarding. **Aplicação confirmada pelo histórico remoto.** |
+| 9 | `20250127000008_membership_integrity.sql` | Integridade dos vínculos: garante a constraint `UNIQUE (establishment_id, user_id)` (detectada por colunas, não por nome), recusa convite para contato que já pertence ao estabelecimento, **restringe o convite aos cargos de funcionário** (`manager`, `professional`, `receptionist` — sem transferência de propriedade), **valida as permissões concedidas no PostgreSQL** (chaves da matriz do projeto e delegação limitada aos próprios poderes do gerente) e revalida o convite no aceite contra escalonamento de privilégios. **Aplicação confirmada pelo histórico remoto.** |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -571,12 +601,14 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Proteção de rotas e página de callback OAuth.
 - ✅ Cadastro de estabelecimentos (barbearias/salões) com vínculo atômico do proprietário.
 - ✅ Seleção de estabelecimento e fluxo de primeiro acesso.
+- ✅ Listagem de estabelecimentos restrita aos vínculos do usuário autenticado (sem empresa duplicada), seleção que navega para o dashboard e escolha preservada após a atualização da página.
+- ✅ Integridade dos vínculos no banco (`UNIQUE (establishment_id, user_id)`), proteção do proprietário contra convites duplicados e auditoria somente leitura dos vínculos (`supabase/tests/audit_membership_links.sql`).
 - ✅ Dashboard administrativo (Visão geral) com navegação por módulos, checklist de configuração e indicadores futuros em estados vazios.
 - ✅ Provisionamento garantido de `public.profiles` para usuários Google e e-mail/senha (trigger, backfill idempotente e `ensure_profile()`).
 - ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
 - ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
-- ✅ Migrations 00000–00005 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
-- ✅ Etapa 6 (gestão de equipe e convites) aplicada no remoto (migrations 00006 e 00007 em 27/10/2026) e publicada no GitHub/Cloudflare Pages.
+- ✅ Migrations 00000–00008 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
+- ✅ Etapa 6 (gestão de equipe, convites e integridade dos vínculos) aplicada no remoto e publicada no GitHub/Cloudflare Pages.
 - ✅ Gestão de serviços (Etapa 5): tela funcional, RPCs, migration 00005 e testes automatizados.
 - ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
 - As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` devem estar configuradas no ambiente de produção do Cloudflare Pages; a validação manual autenticada continua necessária após cada publicação.
