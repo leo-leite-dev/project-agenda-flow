@@ -94,22 +94,38 @@ export function TeamPage() {
   const loadTeam = useCallback(async () => {
     if (!establishment) return
 
-    try {
-      const [teamData, professionalData, invitationData] = await Promise.all([
-        listTeamMembers(establishment.id),
-        listEstablishmentProfessionals(establishment.id),
-        isOwner ? listEstablishmentInvitations(establishment.id) : Promise.resolve([]),
-      ])
+    setIsLoading(true)
+    setLoadError(null)
+    setPageError(null)
 
-      setMembers(teamData)
-      setProfessionals(professionalData)
-      setInvitations(invitationData)
-      setLoadError(null)
-    } catch {
+    const [teamResult, professionalResult, invitationResult] = await Promise.allSettled([
+      listTeamMembers(establishment.id),
+      listEstablishmentProfessionals(establishment.id),
+      isOwner ? listEstablishmentInvitations(establishment.id) : Promise.resolve([]),
+    ])
+
+    if (teamResult.status === 'fulfilled') {
+      setMembers(teamResult.value)
+    } else {
+      setMembers([])
       setLoadError('Não foi possível carregar a equipe. Tente novamente.')
-    } finally {
-      setIsLoading(false)
     }
+
+    if (professionalResult.status === 'fulfilled') {
+      setProfessionals(professionalResult.value)
+    } else {
+      setProfessionals([])
+      setPageError('Não foi possível carregar os profissionais. Tente novamente.')
+    }
+
+    if (invitationResult.status === 'fulfilled') {
+      setInvitations(invitationResult.value)
+    } else {
+      setInvitations([])
+      setPageError('Não foi possível carregar os convites. Tente novamente.')
+    }
+
+    setIsLoading(false)
   }, [establishment, isOwner])
 
   useEffect(() => {
@@ -649,11 +665,13 @@ export function TeamPage() {
 
           <section className="dash-card" aria-label="Lista de funcionários">
             <header className="dash-list-head">
-              <p className="dash-list-head__summary">
-                {members.length === 0
-                  ? 'Nenhum membro vinculado ainda.'
-                  : `${members.length} membro(s) • ${members.filter((member) => member.is_active).length} ativo(s)`}
-              </p>
+              {!isLoading && !loadError && (
+                <p className="dash-list-head__summary">
+                  {members.length === 0
+                    ? 'Nenhum membro vinculado ainda.'
+                    : `${members.length} membro(s) • ${members.filter((member) => member.is_active).length} ativo(s)`}
+                </p>
+              )}
             </header>
 
             {isLoading ? (

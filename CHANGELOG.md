@@ -13,6 +13,7 @@ O formato é baseado no [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 
 ### Corrigido
 
+- **Carregamento da Equipe**: a falha de uma consulta auxiliar de profissionais ou convites não oculta mais os membros carregados; `TeamPage` usa `Promise.allSettled` e apresenta estados distintos de carregamento, erro e equipe vazia. O resumo de equipe vazia não aparece durante uma falha, e o botão "Tentar novamente" repete o carregamento.
 - Estabelecimento duplicado na tela de seleção: a listagem passa a ser filtrada pelo `user_id` do usuário autenticado (`getUserEstablishments`), de modo que os vínculos de outras pessoas nunca chegam ao estado da aplicação. A duplicação visual do caso "BarberLeo" vinha de dois vínculos de **usuários diferentes** (proprietário e profissional), não de um usuário com dois vínculos.
 - Clique sem efeito na seleção de estabelecimento: a tela apenas atualizava o estado e não navegava. Agora o clique valida o vínculo do usuário, ativa o estabelecimento, reconhece o cargo daquele vínculo e redireciona para o dashboard.
 - Redirecionamento devolvido pelo dashboard: com a lista inflada por vínculos alheios, o usuário era reencaminhado endlessmente para a tela de seleção. A decisão de onboarding agora considera o estabelecimento já escolhido.

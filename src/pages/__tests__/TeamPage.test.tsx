@@ -227,12 +227,31 @@ describe('TeamPage', () => {
   })
 
   it('mostra erro de conexão com opção de tentar novamente', async () => {
-    teamMock.listTeamMembers.mockRejectedValue(new Error('offline'))
+    teamMock.listTeamMembers
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce([memberFixture()])
 
     renderTeam(baseValue())
 
     expect(await screen.findByText(/Não foi possível carregar a equipe/i)).toBeInTheDocument()
+    expect(screen.queryByText('Nenhum membro vinculado ainda.')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Tentar novamente/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Tentar novamente/i }))
+
+    expect(await screen.findByText('Ana Souza')).toBeInTheDocument()
+    expect(screen.queryByText(/Não foi possível carregar a equipe/i)).not.toBeInTheDocument()
+  })
+
+  it('mantém a equipe visível quando uma consulta auxiliar falha', async () => {
+    teamMock.listTeamMembers.mockResolvedValue([memberFixture()])
+    professionalMock.listEstablishmentProfessionals.mockRejectedValue(new Error('professionals offline'))
+
+    renderTeam(baseValue())
+
+    expect(await screen.findByText('Ana Souza')).toBeInTheDocument()
+    expect(screen.queryByText('Nenhum membro vinculado ainda.')).not.toBeInTheDocument()
+    expect(await screen.findByText(/Não foi possível carregar os profissionais/i)).toBeInTheDocument()
   })
 
   it('convida um funcionário e exibe o link para compartilhamento manual', async () => {
