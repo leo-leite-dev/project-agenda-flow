@@ -39,6 +39,7 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Seleção de estabelecimento | Tela de seleção quando o usuário possui mais de um vínculo; troca de estabelecimento pelo cabeçalho do dashboard. |
 | Identificação do estabelecimento ativo | Cabeçalho e visão geral exibem o nome, tipo e papel do estabelecimento ativo, sempre a partir dos dados reais da sessão. |
 | Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
+| Gestão de serviços (Etapa 5) | Catálogo por estabelecimento: cadastro em modal, edição, ativação/desativação lógica com confirmação, busca por nome, filtros por categoria e status, preços em centavos formatados em R$. Escritas por RPCs que validam autenticação e papel de proprietário no banco. |
 | Navegação responsiva | Layout adaptativo: sidebar fixa no desktop e drawer com backdrop em tablets e smartphones. |
 | Logout | Encerramento de sessão pelo menu do perfil do dashboard. |
 | Roteamento protegido | Rotas públicas e protegidas com React Router e `ProtectedRoute`. |
@@ -55,11 +56,21 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 
 ---
 
+### Gestão de serviços — uso e regras
+
+- Acesse **Serviços** na sidebar do Dashboard do estabelecimento ativo. Os dados são consultados com filtro por `establishment_id` e novamente limitados pela RLS.
+- Use **Novo serviço** ou **Editar**: nome (até 120 caracteres), descrição opcional (até 500), categorias **Cabelo, Barba, Estética, Unhas e Outros**, duração inteira de **1 a 1440 minutos**, preço não negativo e status ativo/inativo.
+- O preço usa máscara de centavos: digitar `3550` representa **R$ 35,50**, persistidos como o inteiro `3550`. Não há exclusão definitiva; desativar preserva o registro.
+- Membros ativos podem consultar o catálogo. **Somente proprietários** podem gerenciá-lo, conforme validação PostgreSQL nas RPCs `create_establishment_service`, `update_establishment_service` e `set_establishment_service_active`. `authenticated` não recebe escrita direta.
+- A etapa de serviços do checklist fica concluída quando há **pelo menos um serviço ativo**. Sem serviços ativos, o link permite cadastrá-los; as demais etapas permanecem futuras.
+- Para testar localmente: configure as variáveis do Supabase, execute `npm install` e `npm run dev`, autentique-se e selecione um estabelecimento. `npm run test:db` usa um banco isolado em memória; ele não popula o Supabase configurado na interface.
+- Os testes de interface usam mocks; os testes SQL usam PGlite com Auth e funções criptográficas auxiliares de teste. A consulta ao histórico remoto confirma aplicação, **não substitui testes funcionais autenticados no Supabase nem valida o pgcrypto de produção**.
+
 ## Roadmap
 
 Funcionalidades planejadas para as próximas etapas (ainda não implementadas):
 
-- **Gestão de serviços** — catálogo de serviços com duração e preço.
+- **Evolução do catálogo de serviços** — categorias personalizadas e paginação (o cadastro, edição e controle de status já estão implementados).
 - **Gestão de funcionários** — profissionais do estabelecimento e papéis.
 - **Horários de funcionamento** — dias e horários de atendimento.
 - **Agenda de atendimentos** — visualização diária, semanal e mensal.
@@ -437,7 +448,7 @@ git push origin main
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/` e **todas já foram aplicadas no banco remoto do Supabase**.
+As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00005 registradas como aplicadas no Supabase remoto**. A finalização desta entrega não reaplicou migrations nem modificou dados remotos.
 
 Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
 
@@ -452,6 +463,7 @@ Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez 
 | 3 | `20250127000002_add_establishment_type.sql` | Coluna `type` e `create_establishment` com tipo. |
 | 4 | `20250127000003_ensure_user_profiles.sql` | Provisionamento garantido de perfis, backfill idempotente, `ensure_profile()`, autocorreção em `create_establishment`, schema privado para as funções internas, hardening do `search_path` e matriz de `EXECUTE`. |
 | 5 | `20250127000004_grants_and_rls_review.sql` | Privilégio mínimo nas tabelas (somente `SELECT` para `authenticated`), neutralização dos privilégios padrão herdados (`pg_default_acl`), revisão do RLS e verificação explícita de todo o estado de privilégios. |
+| 6 | `20250127000005_establishment_services.sql` | Catálogo de serviços por estabelecimento: tabela com preço em centavos, constraints, índices, RLS e RPCs de escrita exclusivas do proprietário. **Aplicação confirmada pelo histórico remoto.** |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -466,14 +478,7 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-> **Banco com schema já criado manualmente:** se as tabelas foram criadas no SQL Editor (sem histórico de migrations), marque as migrations já aplicadas antes de aplicar as novas, para que o CLI não tente recriar o schema:
->
-> ```bash
-> npx supabase migration repair --status applied 20250127000000
-> npx supabase migration repair --status applied 20250127000001
-> npx supabase migration repair --status applied 20250127000002
-> npx supabase db push
-> ```
+> O histórico remoto já contém 00000–00005. Não é necessário `migration repair` nem reaplicar arquivos SQL desta entrega. Para futuras migrations, confira primeiro `npx supabase migration list --linked`; alterações no banco exigem autorização específica.
 
 ### Opção 2: SQL Editor no Dashboard
 
@@ -520,6 +525,7 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 | Prevenção de duplicações | Perfil e `slug` únicos garantidos. |
 | Isolamento entre tenants | Membro de um estabelecimento não enxerga outro (estabelecimento, membros, permissões e perfis). |
 | Escalonamento de privilégios | `manager` não cria/promove `owner`; `authenticated` não escreve perfis, vínculos nem permissões. |
+| Gestão de serviços | Cadastro e edição persistidos, ativação/desativação lógica, valores inválidos recusados, isolamento entre estabelecimentos, bloqueio de gestor/profissional/outro proprietário e recusa de escrita direta. Os testes negativos não capturam a própria falha de asserção. |
 | Concessões herdadas de `PUBLIC` | Nenhuma função ou tabela do schema `public` mantém privilégio padrão implícito. |
 
 > Os cenários rodam com `SET LOCAL ROLE authenticated` e claims JWT simuladas — ou seja, com o papel e a identidade equivalentes aos de um usuário real. O dono das tabelas ignora RLS e, portanto, não serviria como teste. Um papel sonda (`agenda_flow_probe`), que recebe temporariamente as permissões de escrita, é usado para provar que as **políticas** — e não apenas o `GRANT` — bloqueiam o escalonamento.
@@ -554,10 +560,12 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Provisionamento garantido de `public.profiles` para usuários Google e e-mail/senha (trigger, backfill idempotente e `ensure_profile()`).
 - ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
 - ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
-- ✅ Migrations 00000–00004 aplicadas no banco de produção do Supabase.
+- ✅ Migrations 00000–00005 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
+- ✅ Gestão de serviços (Etapa 5): tela funcional, RPCs, migration 00005 e testes automatizados.
 - ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
+- As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` devem estar configuradas no ambiente de produção do Cloudflare Pages; a validação manual autenticada continua necessária após cada publicação.
 - ⏳ Auditoria automatizada do banco remoto (`verify_remote.sql`) sem evidência de execução registrada.
-- ⏳ Módulos de agenda, serviços, equipe, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada).
+- ⏳ Módulos de agenda, equipe, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada).
 - ⏳ Painel de funcionários e envio real de convites ainda não implementados (RPCs já existem no banco).
 
 Consulte o arquivo [`CHANGELOG.md`](./CHANGELOG.md) para acompanhar as mudanças realizadas.

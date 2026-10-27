@@ -4,6 +4,34 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 
 O formato é baseado no [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/), e este projeto adota o versionamento semântico quando houver releases oficiais.
 
+## [Não publicado]
+
+## [0.2.0] - 2026-10-27
+
+Etapa 5 — Gestão de Serviços. Migration 00005 confirmada no histórico remoto por `supabase migration list --linked`; nenhuma migration reaplicada nesta entrega.
+
+### Adicionado
+
+- Gestão de serviços (Etapa 5):
+  - migration `20250127000005_establishment_services.sql`: tabela `establishment_services` com preço em centavos inteiros, categoria, duração e status; constraints (`duration_minutes > 0`, `price_cents >= 0`, categorias válidas, limite de descrição), índices por estabelecimento/categoria/status e índice único de nome por tenant (insensível a maiúsculas e espaços);
+  - RLS habilitado com policy de SELECT para membros ativos do estabelecimento; nenhuma policy de escrita — todas as operações de escrita passam pelas RPCs `create_establishment_service`, `update_establishment_service` e `set_establishment_service_active` (SECURITY DEFINER, `search_path` vazio, autenticação obrigatória e verificação de papel de **proprietário** no banco);
+  - `GRANT SELECT` na tabela e `GRANT EXECUTE` das RPCs apenas para `authenticated` (sem privilégios para `anon`);
+  - página Serviços no dashboard: listagem com nome, categoria, duração, preço formatado em reais e status; busca por nome, filtros por categoria e status; estados de carregamento, erro e lista vazia; feedback de sucesso/falha;
+  - formulário em modal com validação client-side e server-side: nome obrigatório, descrição opcional, categoria, duração em minutos (> 0) e preço em reais com máscara de digitação convertida para centavos;
+  - ativação/desativação lógica (sem exclusão) com diálogo de confirmação;
+  - checklist do dashboard reflete progresso real: a etapa de serviços é contabilizada como concluída quando o estabelecimento possui pelo menos um serviço ativo (regra documentada);
+  - testes: unitários (listagem, filtros, validações, edição, ativação/desativação, erros do banco) e de banco com papéis equivalentes a usuários reais (proprietário, gestor, profissional, usuário sem vínculo, outro tenant, `anon`), incluindo isolamento entre estabelecimentos e recusa de escrita direta sem privilégios.
+
+### Corrigido
+
+- Validação da duração no formulário recusa minutos fracionados em vez de truncá-los silenciosamente.
+- Etapa de serviços pendente no checklist leva ao cadastro, sem indicar que o módulo funcional está "Em breve".
+- Testes SQL negativos de serviços falham efetivamente quando uma operação inválida é aceita, sem capturar a própria exceção de falha.
+
+### Alterado
+
+- README atualizado com operação do catálogo, regras de autorização, preços em centavos, checklist e confirmação do histórico remoto de 00005, preservando a distinção entre testes locais e validação manual/remota.
+
 ## [0.1.0] - 2026-10-27
 
 Primeira versão publicada do Agenda Flow: autenticação, cadastro e seleção de

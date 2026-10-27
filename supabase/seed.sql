@@ -239,6 +239,33 @@ BEGIN
       )
   ), 'Internal functions must not exist in the public schema';
 
+  --------------------------------------------------------------------------
+  -- Serviços (etapa 5): leitura para membros, escrita somente por RPC e
+  -- apenas para o proprietário.
+  --------------------------------------------------------------------------
+  ASSERT has_table_privilege('authenticated', 'public.establishment_services', 'SELECT'),
+    'authenticated must have SELECT on public.establishment_services';
+  ASSERT NOT has_table_privilege('authenticated', 'public.establishment_services', 'INSERT,UPDATE,DELETE'),
+    'authenticated must NOT have write privileges on public.establishment_services';
+  ASSERT NOT has_table_privilege('anon', 'public.establishment_services', 'SELECT'),
+    'anon must NOT have access to public.establishment_services';
+
+  ASSERT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.establishment_services'::regclass),
+    'RLS must be enabled on public.establishment_services';
+
+  ASSERT has_function_privilege('authenticated', 'public.create_establishment_service(uuid, text, text, text, integer, integer, boolean)', 'EXECUTE'),
+    'authenticated must be able to execute create_establishment_service';
+  ASSERT has_function_privilege('authenticated', 'public.update_establishment_service(uuid, text, text, text, integer, integer, boolean)', 'EXECUTE'),
+    'authenticated must be able to execute update_establishment_service';
+  ASSERT has_function_privilege('authenticated', 'public.set_establishment_service_active(uuid, boolean)', 'EXECUTE'),
+    'authenticated must be able to execute set_establishment_service_active';
+
+  ASSERT NOT has_function_privilege('anon', 'public.create_establishment_service(uuid, text, text, text, integer, integer, boolean)', 'EXECUTE'),
+    'anon must NOT execute create_establishment_service';
+  ASSERT NOT has_function_privilege('anon', 'public.set_establishment_service_active(uuid, boolean)', 'EXECUTE'),
+    'anon must NOT execute set_establishment_service_active';
+
+
   -- RPCs de negócio: apenas authenticated.
   ASSERT has_function_privilege('authenticated', 'public.ensure_profile()', 'EXECUTE'),
     'authenticated must be able to execute public.ensure_profile()';
@@ -501,6 +528,8 @@ DECLARE
   v_est_b uuid;
   v_est_legacy uuid;
   v_est_frontend uuid;
+  v_service_a uuid;
+  v_service_b uuid;
   v_token_manager text;
   v_token_prof text;
   v_token_prof_b text;
@@ -804,13 +833,288 @@ BEGIN
     -- expected
   END;
 
+  --------------------------------------------------------------------------
+  -- Services (etapa 5)
+  --------------------------------------------------------------------------
+  -- Test 20: the owner creates a service for the active establishment.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_service_a := public.create_establishment_service(
+    p_establishment_id => v_est_a,
+    p_name => '  Corte Masculino  ',
+    p_description => 'Corte completo com finalização',
+    p_category => 'cabelo',
+    p_duration_minutes => 30,
+    p_price_cents => 3500,
+    p_is_active => true
+  );
+
+  ASSERT v_service_a IS NOT NULL, 'Service should be created by the owner';
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_services s
+    WHERE s.id = v_service_a
+      AND s.establishment_id = v_est_a
+      AND s.name = 'Corte Masculino'
+      AND s.category = 'cabelo'
+      AND s.duration_minutes = 30
+      AND s.price_cents = 3500
+      AND s.is_active = true
+  ), 'Service must be persisted with trimmed name and correct data';
+
+  -- Test 21: duplicated name (case/trim-insensitive) is rejected.
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'corte masculino',
+      p_category => 'cabelo',
+      p_duration_minutes => 30,
+      p_price_cents => 4000
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Duplicated service name should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 22: invalid values are rejected by the RPC.
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'Servico Invalido',
+      p_category => 'cabelo',
+      p_duration_minutes => 0,
+      p_price_cents => 3500
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Zero duration should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'Servico Invalido',
+      p_category => 'cabelo',
+      p_duration_minutes => 30,
+      p_price_cents => -100
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Negative price should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'Servico Invalido',
+      p_category => 'teletransporte',
+      p_duration_minutes => 30,
+      p_price_cents => 3500
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invalid category should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 23: only the owner can manage services (manager and professional cannot).
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'Servico do Gestor',
+      p_category => 'outros',
+      p_duration_minutes => 30,
+      p_price_cents => 1000
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT be able to create services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.update_establishment_service(
+      p_service_id => v_service_a,
+      p_name => 'Hackeado',
+      p_duration_minutes => 30,
+      p_price_cents => 1
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Professional should NOT be able to update services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 24: the owner edits and toggles the service (logical deactivation).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  PERFORM public.update_establishment_service(
+    p_service_id => v_service_a,
+    p_name => 'Corte Premium',
+    p_description => NULL,
+    p_category => 'cabelo',
+    p_duration_minutes => 40,
+    p_price_cents => 5000,
+    p_is_active => NULL
+  );
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_services s
+    WHERE s.id = v_service_a
+      AND s.name = 'Corte Premium'
+      AND s.duration_minutes = 40
+      AND s.price_cents = 5000
+      AND s.is_active = true
+  ), 'Service edit must be persisted';
+
+  PERFORM public.set_establishment_service_active(v_service_a, false);
+  ASSERT (
+    SELECT is_active FROM public.establishment_services WHERE id = v_service_a
+  ) = false, 'Service deactivation must be persisted (logical, no delete)';
+
+  PERFORM public.set_establishment_service_active(v_service_a, true);
+  ASSERT (
+    SELECT is_active FROM public.establishment_services WHERE id = v_service_a
+  ) = true, 'Service reactivation must be persisted';
+
+  -- Test 25: another establishment has its own catalog (data isolation).
+  -- Owner A first confirms the data of its own service.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  ASSERT (
+    SELECT price_cents FROM public.establishment_services WHERE id = v_service_a
+  ) = 5000, 'Service A data must be readable by its own owner';
+
+  PERFORM set_config('request.jwt.claim.sub', v_owner_b::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  v_service_b := public.create_establishment_service(
+    p_establishment_id => v_est_b,
+    p_name => 'Corte Masculino',
+    p_category => 'cabelo',
+    p_duration_minutes => 25,
+    p_price_cents => 5000
+  );
+
+  ASSERT v_service_b IS NOT NULL, 'The other tenant must have its own catalog';
+  ASSERT v_service_a <> v_service_b, 'The two tenants must have independent services';
+  ASSERT (
+    SELECT price_cents FROM public.establishment_services WHERE id = v_service_b
+  ) = 5000, 'Service B data must be readable by its own owner';
+  ASSERT (
+    SELECT establishment_id FROM public.establishment_services WHERE id = v_service_b
+  ) = v_est_b, 'Service B must belong to establishment B';
+
+  -- Test 26: tenant isolation — professional A sees only the services of
+  -- establishment A.
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_services s WHERE s.id = v_service_a
+  ), 'Member should see the services of the own establishment';
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_services s WHERE s.id = v_service_b
+  ), 'Member should NOT see the services of another tenant';
+
+  -- Test 27: the owner of another establishment cannot update services that
+  -- are not his.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_b::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.update_establishment_service(
+      p_service_id => v_service_a,
+      p_name => 'Sequestrado',
+      p_duration_minutes => 30,
+      p_price_cents => 1
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of another tenant should NOT update foreign services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 28: a user without an establishment cannot create services.
+  PERFORM set_config('request.jwt.claim.sub', v_legacy_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"88888888-8888-8888-8888-888888888888","role":"authenticated","aud":"authenticated","email":"legacy-user@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => v_est_a,
+      p_name => 'Intruso',
+      p_category => 'outros',
+      p_duration_minutes => 30,
+      p_price_cents => 1000
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'User without ownership should NOT create services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 29: direct writes without privileges are refused by PostgreSQL.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  BEGIN
+    INSERT INTO public.establishment_services (
+      establishment_id, name, category, duration_minutes, price_cents
+    )
+    VALUES (v_est_a, 'Insercao Direta', 'outros', 30, 1000);
+    RAISE EXCEPTION 'Authenticated role should NOT insert services directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected
+  END;
+
+  BEGIN
+    UPDATE public.establishment_services SET price_cents = 1 WHERE id = v_service_a;
+    RAISE EXCEPTION 'Authenticated role should NOT update services directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected
+  END;
+
   RAISE NOTICE 'All application assertions passed.';
 END $$;
 
 RESET ROLE;
 
 --------------------------------------------------------------------------------
--- 4. RLS policy layer (probe role with write grants)
+-- 3.1 Usuário não autenticado (anon) não lê serviços nem executa RPCs
+--------------------------------------------------------------------------------
+SET LOCAL ROLE anon;
+
+DO $$
+BEGIN
+  ASSERT current_user = 'anon', 'This scenario must run as the anon role';
+
+  BEGIN
+    PERFORM 1 FROM public.establishment_services;
+    RAISE EXCEPTION 'anon should NOT read services';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: recusado pelo PostgreSQL
+  END;
+
+  BEGIN
+    PERFORM public.create_establishment_service(
+      p_establishment_id => '00000000-0000-0000-0000-000000000000'::uuid,
+      p_name => 'Anonimo',
+      p_category => 'outros',
+      p_duration_minutes => 30,
+      p_price_cents => 1000
+    );
+    RAISE EXCEPTION 'anon should NOT execute the service RPC';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: EXECUTE não concedido ao anon
+  END;
+
+  RAISE NOTICE 'Unauthenticated assertions passed.';
+END $$;
+
+RESET ROLE;
 --------------------------------------------------------------------------------
 -- O papel de produção não possui escrita direta; para provar que as POLÍTICAS
 -- RLS (e não apenas o GRANT) bloqueiam o escalonamento, um papel sonda recebe

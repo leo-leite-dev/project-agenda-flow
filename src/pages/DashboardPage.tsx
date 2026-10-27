@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import type { User } from '@supabase/supabase-js'
@@ -14,6 +15,7 @@ import {
   FinanceEmptyIcon,
   SparkIcon,
 } from '../components/dashboard/icons'
+import { listServices } from '../lib/services'
 
 const ESTABLISHMENT_TYPE_LABEL = {
   barbershop: 'Barbearia',
@@ -25,9 +27,14 @@ interface SetupTask {
   step: number
   title: string
   description: string
-  /** Rota do módulo correspondente (página "Em breve" nesta etapa). */
+  /** Rota do módulo correspondente. */
   modulePath: string
   moduleLabel: string
+  /**
+   * Regra de conclusão. `servicesActive` é satisfeita quando o estabelecimento
+   * possui pelo menos um serviço ATIVO cadastrado (dados reais do Supabase).
+   */
+  completionRule?: 'servicesActive'
 }
 
 const SETUP_TASKS: SetupTask[] = [
@@ -44,6 +51,7 @@ const SETUP_TASKS: SetupTask[] = [
     description: 'Corte, barba, coloração e demais serviços com duração e preço.',
     modulePath: '/dashboard/servicos',
     moduleLabel: 'Serviços',
+    completionRule: 'servicesActive',
   },
   {
     step: 3,
@@ -108,7 +116,36 @@ interface OverviewContentProps {
   user: User | null
 }
 
+/**
+ * Regra documentada do checklist: a etapa "Cadastrar os serviços" é contabilizada
+ * como concluída quando o estabelecimento possui pelo menos um serviço ATIVO.
+ * Os dados vêm do Supabase (RLS limita ao estabelecimento ativo); em caso de
+ * falha de carregamento, a etapa é exibida como pendente — nada é inventado.
+ */
 function OverviewContent({ establishment, user }: OverviewContentProps) {
+  const [hasActiveService, setHasActiveService] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let isMounted = true
+
+    void listServices(establishment.id)
+      .then((services) => {
+        if (isMounted) setHasActiveService(services.some((service) => service.is_active))
+      })
+      .catch(() => {
+        if (isMounted) setHasActiveService(null)
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [establishment.id])
+
+  const isTaskCompleted = (task: SetupTask): boolean =>
+    task.completionRule === 'servicesActive' ? hasActiveService === true : false
+
+  const completedCount = SETUP_TASKS.filter(isTaskCompleted).length
+
   const location = establishment.address
   const locationLabel =
     location?.city && location?.state ? `${location.city}, ${location.state}` : null
@@ -158,25 +195,43 @@ function OverviewContent({ establishment, user }: OverviewContentProps) {
               atualizações.
             </p>
           </div>
-          <span className="dash-checklist__progress">0 de 4 concluídas</span>
+          <span className="dash-checklist__progress">
+            {completedCount} de {SETUP_TASKS.length} concluídas
+          </span>
         </header>
 
         <ol className="dash-checklist__list">
-          {SETUP_TASKS.map((task) => (
-            <li className="dash-task" key={task.step}>
-              <span className="dash-task__step" aria-hidden="true">
-                <CheckIcon />
-              </span>
-              <div className="dash-task__body">
-                <h3 className="dash-task__title">{task.title}</h3>
-                <p className="dash-task__description">{task.description}</p>
-              </div>
-              <Link to={task.modulePath} className="dash-task__action">
-                <ClockIcon className="dash-task__action-icon" />
-                {task.moduleLabel} • Em breve
-              </Link>
-            </li>
-          ))}
+          {SETUP_TASKS.map((task) => {
+            const completed = isTaskCompleted(task)
+
+            return (
+              <li className="dash-task" key={task.step}>
+                <span
+                  className={`dash-task__step${completed ? ' dash-task__step--done' : ''}`}
+                  aria-hidden="true"
+                >
+                  <CheckIcon />
+                </span>
+                <div className="dash-task__body">
+                  <h3 className="dash-task__title">{task.title}</h3>
+                  <p className="dash-task__description">{task.description}</p>
+                </div>
+                <Link to={task.modulePath} className="dash-task__action">
+                  {completed ? (
+                    <>
+                      <CheckIcon className="dash-task__action-icon" />
+                      {task.moduleLabel} • Concluída
+                    </>
+                  ) : (
+                    <>
+                      <ClockIcon className="dash-task__action-icon" />
+                      {task.moduleLabel} • {task.completionRule === 'servicesActive' ? 'Cadastrar serviços' : 'Em breve'}
+                    </>
+                  )}
+                </Link>
+              </li>
+            )
+          })}
         </ol>
       </section>
 

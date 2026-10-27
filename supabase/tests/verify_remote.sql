@@ -152,7 +152,8 @@ DECLARE
     'public.establishments',
     'public.establishment_members',
     'public.member_permissions',
-    'public.establishment_invitations'
+    'public.establishment_invitations',
+    'public.establishment_services'
   ];
   v_privilege text;
   v_privileges text[] := ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'];
@@ -549,7 +550,8 @@ BEGIN
         'establishments',
         'establishment_members',
         'member_permissions',
-        'establishment_invitations'
+        'establishment_invitations',
+        'establishment_services'
       )
       AND NOT c.relrowsecurity
   LOOP
@@ -572,7 +574,8 @@ BEGIN
         'establishments',
         'establishment_members',
         'member_permissions',
-        'establishment_invitations'
+        'establishment_invitations',
+        'establishment_services'
       )
   LOOP
     RAISE NOTICE 'AVISO: tabela publica fora do escopo do projeto sem RLS: %', r.relname;

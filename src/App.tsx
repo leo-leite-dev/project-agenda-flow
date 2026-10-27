@@ -9,6 +9,7 @@ import { DashboardModulePage } from './pages/DashboardModulePage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { SelectEstablishmentPage } from './pages/SelectEstablishmentPage'
+import { ServicesPage } from './pages/ServicesPage'
 import { WelcomePage } from './pages/WelcomePage'
 
 import './App.css'
@@ -50,6 +51,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/dashboard/servicos"
+            element={
+              <ProtectedRoute>
+                <ServicesPage />
               </ProtectedRoute>
             }
           />

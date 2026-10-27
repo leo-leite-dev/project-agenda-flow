@@ -12,9 +12,57 @@ export interface EstablishmentAddress {
   address?: string | null
 }
 
+export type ServiceCategory = 'cabelo' | 'barba' | 'estetica' | 'unhas' | 'outros'
+
 export interface Database {
   public: {
     Tables: {
+      establishment_services: {
+        Row: {
+          id: string
+          establishment_id: string
+          name: string
+          description: string | null
+          category: ServiceCategory
+          duration_minutes: number
+          price_cents: number
+          is_active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          name: string
+          description?: string | null
+          category?: ServiceCategory
+          duration_minutes: number
+          price_cents: number
+          is_active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          name?: string
+          description?: string | null
+          category?: ServiceCategory
+          duration_minutes?: number
+          price_cents?: number
+          is_active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'establishment_services_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+        ]
+      }
       profiles: {
         Row: {
           id: string
@@ -242,6 +290,37 @@ export interface Database {
     }
     Views: Record<string, never>
     Functions: {
+      create_establishment_service: {
+        Args: {
+          p_establishment_id: string
+          p_name: string
+          p_description?: string
+          p_category?: string
+          p_duration_minutes: number
+          p_price_cents: number
+          p_is_active?: boolean
+        }
+        Returns: string
+      }
+      update_establishment_service: {
+        Args: {
+          p_service_id: string
+          p_name: string
+          p_description?: string
+          p_category?: string
+          p_duration_minutes?: number
+          p_price_cents?: number
+          p_is_active?: boolean
+        }
+        Returns: null
+      }
+      set_establishment_service_active: {
+        Args: {
+          p_service_id: string
+          p_is_active: boolean
+        }
+        Returns: null
+      }
       ensure_profile: {
         Args: Record<string, never>
         Returns: string

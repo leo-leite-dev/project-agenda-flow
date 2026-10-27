@@ -7,6 +7,18 @@ import { AuthContext, type AuthContextValue, type UserEstablishment } from '../.
 import { DashboardPage } from '../DashboardPage'
 import { DashboardModulePage } from '../DashboardModulePage'
 
+const servicesMock = vi.hoisted(() => ({
+  listServices: vi.fn(),
+}))
+
+vi.mock('../../lib/services', () => ({
+  listServices: servicesMock.listServices,
+}))
+
+vi.mock('../../lib/supabase', () => ({
+  supabase: {},
+}))
+
 function establishmentFixture(overrides: Partial<UserEstablishment> = {}): UserEstablishment {
   return {
     id: 'est-1',
@@ -69,17 +81,18 @@ function renderDashboard(value: AuthContextValue) {
 describe('DashboardPage (visão geral)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    servicesMock.listServices.mockResolvedValue([])
   })
 
-  it('mostra o nome real do estabelecimento e os dados do usuário', () => {
+  it('mostra o nome real do estabelecimento e os dados do usuário', async () => {
     renderDashboard(baseValue())
 
-    expect(screen.getByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
     expect(screen.getAllByText(/owner@alpha.test/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Barbearia/i).length).toBeGreaterThan(0)
   })
 
-  it('exibe o checklist de configuração com as quatro etapas em breve', () => {
+  it('exibe o checklist de configuração com as quatro etapas em breve', async () => {
     renderDashboard(baseValue())
 
     expect(screen.getByText(/Preparação para os primeiros agendamentos/i)).toBeInTheDocument()
@@ -87,14 +100,25 @@ describe('DashboardPage (visão geral)', () => {
     expect(screen.getByText(/Cadastrar os serviços oferecidos/i)).toBeInTheDocument()
     expect(screen.getByText(/Adicionar profissionais à equipe/i)).toBeInTheDocument()
     expect(screen.getByText(/Preparar a agenda de atendimentos/i)).toBeInTheDocument()
-    expect(screen.getByText(/0 de 4 concluídas/i)).toBeInTheDocument()
-    expect(screen.getAllByText(/Em breve/i).length).toBeGreaterThanOrEqual(4)
+    expect(screen.getByText('0 de 4 concluídas')).toBeInTheDocument()
+    expect(await screen.findAllByText(/Em breve/i).then((items) => items.length)).toBeGreaterThanOrEqual(4)
   })
 
-  it('apresenta estados vazios honestos nos indicadores futuros', () => {
+  it('marca a etapa de serviços como concluída quando há um serviço ativo', async () => {
+    servicesMock.listServices.mockResolvedValue([
+      { id: 'svc-1', establishment_id: 'est-1', name: 'Corte', description: null, category: 'cabelo', duration_minutes: 30, price_cents: 3500, is_active: true, created_at: '', updated_at: '' },
+    ])
+
     renderDashboard(baseValue())
 
-    expect(screen.getByText(/Agendamentos de hoje/i)).toBeInTheDocument()
+    expect(await screen.findByText('1 de 4 concluídas')).toBeInTheDocument()
+    expect(screen.getByText(/Serviços • Concluída/i)).toBeInTheDocument()
+  })
+
+  it('apresenta estados vazios honestos nos indicadores futuros', async () => {
+    renderDashboard(baseValue())
+
+    expect(await screen.findByText(/Agendamentos de hoje/i)).toBeInTheDocument()
     expect(screen.getByText(/A agenda estará disponível em breve/i)).toBeInTheDocument()
     expect(screen.getByText(/Faturamento/i)).toBeInTheDocument()
     expect(screen.getByText(/O acompanhamento financeiro estará disponível em breve/i)).toBeInTheDocument()
@@ -103,8 +127,8 @@ describe('DashboardPage (visão geral)', () => {
   it('navega para o módulo "Em breve" pelo checklist e pela sidebar', () => {
     renderDashboard(baseValue())
 
-    fireEvent.click(screen.getByRole('link', { name: /Serviços • Em breve/i }))
-    expect(screen.getByRole('heading', { name: 'Serviços' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: /Equipe • Em breve/i }))
+    expect(screen.getByRole('heading', { name: 'Equipe' })).toBeInTheDocument()
     expect(screen.getByText(/Este módulo faz parte das próximas etapas/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('link', { name: /Agenda/i })[0])
@@ -128,7 +152,7 @@ describe('DashboardPage (visão geral)', () => {
     expect(screen.getByText('SELECT')).toBeInTheDocument()
   })
 
-  it('redireciona módulo desconhecido para a visão geral', () => {
+  it('redireciona módulo desconhecido para a visão geral', async () => {
     render(
       <MemoryRouter initialEntries={['/dashboard/modulo-inexistente']}>
         <AuthContext.Provider value={baseValue()}>
@@ -141,7 +165,7 @@ describe('DashboardPage (visão geral)', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
   })
 
   it('encerra a sessão pelo menu do perfil', async () => {

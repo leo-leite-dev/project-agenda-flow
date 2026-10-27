@@ -46,7 +46,7 @@ export const dashboardNav: DashboardNavItem[] = [
     path: '/dashboard/servicos',
     label: 'Serviços',
     icon: ServicesIcon,
-    implemented: false,
+    implemented: true,
     description:
       'Catálogo de serviços com duração e preço, base para a agenda e o financeiro.',
   },
