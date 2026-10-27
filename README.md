@@ -9,9 +9,11 @@ Sistema de gerenciamento de agenda, clientes e finanças para cabeleireiros, bar
 
 ## Apresentação
 
-O **Agenda Flow** é uma aplicação web pensada para simplificar o dia a dia de profissionais e negócios do setor de beleza. A plataforma centraliza o controle de agendamentos, cadastro de clientes e acompanhamento financeiro em uma única interface moderna e responsiva.
+O **Agenda Flow** é uma plataforma SaaS de gestão para **barbearias e salões de beleza**. A aplicação centraliza em um único painel administrativo o controle da agenda de atendimentos, o cadastro de clientes, a equipe e o acompanhamento financeiro do negócio.
 
-> **Status atual:** o projeto está em fase inicial de construção. A interface pública de apresentação já foi estruturada e as próximas etapas envolvem a criação dos módulos funcionais.
+Cada estabelecimento é um **tenant** independente: possui seus próprios dados, funcionários e vínculos de usuários, com isolamento garantido no banco de dados por **Row Level Security (RLS)** — a arquitetura é **multi-tenant**, com um único banco PostgreSQL compartilhado e políticas que impedem o acesso cruzado entre estabelecimentos.
+
+> **Status atual:** autenticação (Google e e-mail/senha), cadastro e seleção de estabelecimentos e o dashboard administrativo (Visão geral com navegação por módulos) estão implementados. Os módulos de agenda, serviços, equipe, clientes e financeiro constam do roadmap.
 
 ---
 
@@ -30,30 +32,43 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 
 | Funcionalidade | Descrição |
 | --- | --- |
-| Página inicial de apresentação | Tela de boas-vindas com identidade visual do Agenda Flow e mensagem de lançamento futuro. |
-| Configuração do ambiente React + Vite | Estrutura base do projeto com React 19, TypeScript e Vite 8. |
-| Padronização de estilos | Sistema de cores, tipografia e layout responsivo definidos em CSS. |
-| Linting com Oxlint | Configuração de linting para React e TypeScript. |
-| Roteamento com React Router | Navegação entre páginas públicas e protegidas. |
-| Autenticação com Google OAuth | Login via `signInWithOAuth({ provider: 'google' })` com callback e gerenciamento de sessão. |
-| Autenticação com e-mail e senha | Login e cadastro tradicionais preservados. |
-| Gerenciamento de sessão | Contexto de autenticação com `AuthProvider`, hook `useAuth` e proteção de rotas. |
+| Autenticação com Google | Login via `signInWithOAuth({ provider: 'google' })` com callback dedicado e processamento do fluxo implícito. |
+| Autenticação com e-mail e senha | Login e cadastro tradicionais, com confirmação de e-mail no Supabase. |
+| Gerenciamento de sessão | Contexto de autenticação (`AuthProvider`), hook `useAuth`, proteção de rotas e logout. |
+| Cadastro de estabelecimentos | Formulário para cadastrar barbearias/salões (nome, tipo, contato, endereço) com criação atômica do vínculo de proprietário. |
+| Seleção de estabelecimento | Tela de seleção quando o usuário possui mais de um vínculo; troca de estabelecimento pelo cabeçalho do dashboard. |
+| Identificação do estabelecimento ativo | Cabeçalho e visão geral exibem o nome, tipo e papel do estabelecimento ativo, sempre a partir dos dados reais da sessão. |
+| Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
+| Navegação responsiva | Layout adaptativo: sidebar fixa no desktop e drawer com backdrop em tablets e smartphones. |
+| Logout | Encerramento de sessão pelo menu do perfil do dashboard. |
+| Roteamento protegido | Rotas públicas e protegidas com React Router e `ProtectedRoute`. |
 | Integração com Supabase | Cliente `@supabase/supabase-js` configurado com tipagens do banco de dados. |
 | Banco de dados multi-tenant | Schema PostgreSQL com isolamento por estabelecimento (`profiles`, `establishments`, `establishment_members`, `member_permissions`, `establishment_invitations`). |
 | Row Level Security (RLS) | Políticas de segurança em todas as tabelas de dados, com funções auxiliares `SECURITY DEFINER`. |
-| Convites de funcionários | Estrutura de convites com token hasheado, prazo de validade, verificação de identidade e controle de utilização única. |
-| Seed de testes local | Script `supabase/seed.sql` com cenários que validam isolamento entre tenants e prevenção de escalonamento de privilégios. |
+| Provisionamento de perfis | Trigger em `auth.users` cria o perfil público de todo usuário autenticado (Google e e-mail/senha), com backfill idempotente dos perfis ausentes e função `ensure_profile()` de autocorreção. |
+| Permissões versionadas | Privilégio mínimo registrado em migration: `authenticated` com leitura apenas, `anon` sem acesso, matriz de `EXECUTE` explícita por função e verificação automatizada do estado. |
+| Estrutura de convites de funcionários | Tabelas e RPCs de convites com token hasheado, prazo de validade, verificação de identidade e controle de utilização única (interface em desenvolvimento). |
+| Testes de integração do banco | Runner com PostgreSQL real (PGlite) que aplica as migrations e executa as asserções de RLS, multi-tenant e integridade de perfis (`npm run test:db`). |
+| Auditoria do banco | Script somente leitura (`supabase/tests/verify_remote.sql`) que valida perfis, trigger, permissões, RLS e default privileges. |
+
+> Mecanismos de autorização e isolamento: o acesso a cada linha é decidido pelas políticas RLS (papéis `owner`, `manager`, `professional`, `receptionist`), as escritas passam por RPCs `SECURITY DEFINER` com validações atômicas e o role `authenticated` tem somente leitura nas tabelas de dados.
 
 ---
 
-## Funcionalidades planejadas
+## Roadmap
 
-- **Agenda inteligente:** visualização diária, semanal e mensal de agendamentos.
-- **Cadastro de clientes:** histórico de atendimentos, preferências e contato.
-- **Gestão financeira:** controle de receitas, despesas e relatórios simplificados.
-- **Notificações:** lembretes de agendamento por e-mail ou WhatsApp.
-- **Autenticação e autorização:** login seguro para profissionais e administradores.
-- **Painel administrativo:** configurações do negócio, serviços e colaboradores.
+Funcionalidades planejadas para as próximas etapas (ainda não implementadas):
+
+- **Gestão de serviços** — catálogo de serviços com duração e preço.
+- **Gestão de funcionários** — profissionais do estabelecimento e papéis.
+- **Horários de funcionamento** — dias e horários de atendimento.
+- **Agenda de atendimentos** — visualização diária, semanal e mensal.
+- **Cadastro de clientes** — histórico de atendimentos, preferências e contato.
+- **Gestão financeira** — receitas, despesas e relatórios.
+- **Convites de funcionários** — interface para criação e aceite de convites (as RPCs já existem no banco).
+- **Permissões administrativas mais completas** — gestão de permissões granulares por membro.
+- **Área administrativa global da plataforma** — visão operacional entre estabelecimentos.
+- **Notificações** — lembretes por e-mail ou WhatsApp.
 
 ---
 
@@ -76,6 +91,8 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Tecnologia | Versão | Finalidade |
 | --- | --- | --- |
 | [Oxlint](https://oxc.rs/docs/guide/usage/linter.html) | ^1.88.0 | Linter rápido para React e TypeScript. |
+| [Vitest](https://vitest.dev/) | ^3.2.7 | Testes unitários (React/TypeScript). |
+| [PGlite](https://github.com/electric-sql/pglite) | ^0.3.7 | PostgreSQL real para os testes de integração do banco. |
 
 ### Tipagens
 
@@ -84,6 +101,16 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | @types/node | ^24.19.2 | Tipagens para APIs do Node.js. |
 | @types/react | ^19.3.0 | Tipagens para o React. |
 | @types/react-dom | ^19.3.0 | Tipagens para o React DOM. |
+
+### Infraestrutura
+
+| Tecnologia | Finalidade |
+| --- | --- |
+| [Supabase](https://supabase.com/) | Backend-as-a-Service: PostgreSQL, Auth, Storage e Edge Functions. |
+| [Supabase Auth](https://supabase.com/docs/guides/auth) | Autenticação com Google e e-mail/senha (GoTrue). |
+| [PostgreSQL](https://www.postgresql.org/) | Banco relacional com Row Level Security (versão 17). |
+| [GitHub](https://github.com/) | Controle de versão (repositório `leo-leite-dev/project-agenda-flow`). |
+| [Cloudflare Pages](https://pages.cloudflare.com/) | Hospedagem estática com deploy automático a partir do GitHub. |
 
 ---
 
@@ -102,9 +129,18 @@ agenda-flow/
 ├── supabase/             # Configuração e migrations do Supabase
 │   ├── config.toml       # Configuração do Supabase CLI
 │   ├── seed.sql          # Seed de testes para ambiente local
-│   └── migrations/       # Migrations versionadas do PostgreSQL
-│       ├── 20250127000000_initial_schema.sql
-│       └── 20250127000001_rls_policies.sql
+│   ├── migrations/       # Migrations versionadas do PostgreSQL
+│   │   ├── 20250127000000_initial_schema.sql
+│   │   ├── 20250127000001_rls_policies.sql
+│   │   ├── 20250127000002_add_establishment_type.sql
+│   │   ├── 20250127000003_ensure_user_profiles.sql
+│   │   └── 20250127000004_grants_and_rls_review.sql
+│   └── tests/            # Testes e auditoria do banco
+│       ├── verify_remote.sql   # Auditoria somente leitura (SQL Editor)
+│       └── pglite/
+│           ├── bootstrap.sql    # Emulação do ambiente Supabase
+│           ├── run.mjs         # Runner de integração (npm run test:db)
+│           └── inspect.mjs     # Diagnóstico de privilégios (npm run test:db:inspect)
 ├── tsconfig.app.json     # Configuração do TypeScript para a aplicação
 ├── tsconfig.json         # Configuração raiz do TypeScript
 ├── tsconfig.node.json    # Configuração do TypeScript para o Vite
@@ -114,7 +150,14 @@ agenda-flow/
 │   └── icons.svg
 └── src/                  # Código-fonte da aplicação
     ├── components/       # Componentes reutilizáveis
-    │   └── ProtectedRoute.tsx
+    │   ├── ProtectedRoute.tsx
+    │   └── dashboard/    # Componentes do dashboard administrativo
+    │       ├── DashboardHeader.tsx
+    │       ├── DashboardLayout.tsx
+    │       ├── DashboardSidebar.tsx
+    │       ├── ModulePlaceholder.tsx
+    │       ├── icons.tsx
+    │       └── navigation.ts
     ├── contexts/         # Contextos React
     │   ├── AuthContext.ts
     │   └── AuthProvider.tsx
@@ -123,12 +166,17 @@ agenda-flow/
     │   └── useAuth.ts
     ├── lib/              # Utilitários e integrações
     │   ├── database.types.ts
-    │   └── supabase.ts
+    │   ├── supabase.ts
+    │   └── utils.ts
     ├── pages/            # Páginas da aplicação
     │   ├── AuthCallbackPage.tsx
+    │   ├── CreateEstablishmentPage.tsx
+    │   ├── DashboardModulePage.tsx
     │   ├── DashboardPage.tsx
     │   ├── HomePage.tsx
-    │   └── LoginPage.tsx
+    │   ├── LoginPage.tsx
+    │   ├── SelectEstablishmentPage.tsx
+    │   └── WelcomePage.tsx
     ├── App.css           # Estilos da aplicação
     ├── App.tsx           # Configuração de rotas
     ├── index.css         # Estilos globais e variáveis
@@ -195,10 +243,10 @@ O projeto utiliza um arquivo `.env.local` para armazenar configurações sensív
 
    | Variável | Descrição | Exemplo |
    | --- | --- | --- |
-   | `VITE_APP_NAME` | Nome exibido pela aplicação. | `Agenda Flow` |
-   | `VITE_APP_URL` | URL pública da aplicação. | `http://localhost:5173` |
    | `VITE_SUPABASE_URL` | URL do projeto Supabase. | `https://xxxx.supabase.co` |
    | `VITE_SUPABASE_PUBLISHABLE_KEY` | Chave pública (`anon`) do Supabase. | `eyJhbG...` |
+
+   > A URL pública da aplicação é detectada automaticamente via `window.location.origin`, portanto não é necessário configurar `VITE_APP_URL`.
 
    > Apenas a chave **publishable/anon** pode ser exposta no navegador. Nunca use `service_role` ou outras chaves privadas em variáveis `VITE_`.
 
@@ -229,9 +277,8 @@ Para que os convites de funcionários sejam seguros, ative a confirmação dos c
    - `http://localhost:5173/auth/callback`
    - `https://<sua-url-de-producao>/auth/callback`
 4. Em **Authentication > URL Configuration** no Supabase, adicione as mesmas URLs em **Redirect URLs**.
-5. Certifique-se de que `VITE_APP_URL` no `.env.local` aponte para a URL correta do ambiente:
-   - Local: `http://localhost:5173`
-   - Produção: `https://<sua-url-de-producao>`
+
+> **Atenção:** o Vite está configurado para usar a porta `5173` de forma fixa (`strictPort: true`). Se outro processo estiver usando essa porta, o servidor não iniciará em outra porta automaticamente. Certifique-se de que a URL local autorizada no Supabase seja exatamente `http://localhost:5173/auth/callback`.
 
 > O Client Secret do Google nunca deve ser incluído no código ou em variáveis `VITE_`. Ele deve permanecer apenas no painel seguro do Supabase.
 
@@ -278,6 +325,19 @@ profiles (1:1)
 | `member_permissions` | Permissões granulares opcionais por vínculo. |
 | `establishment_invitations` | Convites individuais, com token hasheado e validade. |
 
+### Arquitetura de permissões
+
+| Schema | Conteúdo | Exposto ao PostgREST |
+| --- | --- | --- |
+| `public` | RPCs chamadas pelo frontend (`create_establishment`, `ensure_profile`, convites) e auxiliares de leitura usadas pelas políticas RLS. | Sim |
+| `agenda_flow_private` | Funções de trigger e helper interno de provisionamento de perfil. | Não |
+
+| Papel | Tabelas de dados | RPCs de negócio | Auxiliares de leitura |
+| --- | --- | --- | --- |
+| `anon` | sem acesso | sem acesso | leitura (somente do próprio chamador) |
+| `authenticated` | `SELECT` | `EXECUTE` | leitura (somente do próprio tenant) |
+| `service_role` | inalterado (ignora RLS) | inalterado | inalterado |
+
 ### Papéis (roles)
 
 | Papel | Descrição |
@@ -291,11 +351,17 @@ profiles (1:1)
 
 - RLS ativado em todas as tabelas de dados.
 - Acesso negado por padrão.
-- Funções auxiliares são `SECURITY DEFINER` para evitar recursão nas políticas.
+- O role `authenticated` tem **somente leitura** (`SELECT`) nas tabelas de dados; nenhuma escrita direta é concedida. Todas as escritas passam por RPCs `SECURITY DEFINER` que aplicam as regras de negócio de forma atômica.
+- O role `anon` não possui nenhum privilégio sobre as tabelas do projeto.
+- Nenhuma função do schema `public` mantém o `EXECUTE` implícito herdado de `PUBLIC`: cada função tem sua matriz de `EXECUTE` explicitamente definida (verificada por migration e por auditoria). Exceção justificada: funções `RETURNS event_trigger` vinculadas a `pg_event_trigger` (caso real: `public.rls_auto_enable`), que só executam como event trigger e não são chamáveis por SQL nem expostas pelo PostgREST.
+- Funções internas (triggers e helper de provisionamento) vivem no schema privado `agenda_flow_private`, que não é exposto ao PostgREST e não tem `USAGE` para os papéis da API.
+- Funções `SECURITY DEFINER` são criadas com `search_path` vazio e referências totalmente qualificadas (`schema.objeto`), eliminando dependência de search_path manipulável.
 - A criação de um estabelecimento sempre cria, de forma atômica, o vínculo do proprietário.
 - Apenas proprietários podem promover/cadastrar outros proprietários ou gestores.
 - Convites armazenam hash SHA-256 do token; a identidade do destinatário é verificada no aceite.
 - Nenhuma chave privada do Supabase é armazenada no código ou exposta ao navegador.
+- `public.profiles` não aceita `INSERT`/`DELETE` direto do role `authenticated`: perfis só são criados pelo trigger, pelo backfill ou por `ensure_profile()`.
+- Concessões automáticas (`ALTER DEFAULT PRIVILEGES`) foram **neutralizadas para os objetos do projeto**: as default privileges do role `postgres` (que cria as tabelas e funções do Agenda Flow) para `PUBLIC`/`anon`/`authenticated` são revogadas — incluindo `TRUNCATE`, `REFERENCES`, `TRIGGER` e `MAINTAIN`. As default privileges de papéis internos da plataforma (ex.: `supabase_admin`) **não são alteráveis** pelo role `postgres` e, por isso, são preservadas e apenas reportadas na auditoria.
 
 ---
 
@@ -307,6 +373,10 @@ profiles (1:1)
 | `npm run build` | Executa a checagem de tipos e gera a build de produção na pasta `dist/`. |
 | `npm run preview` | Visualiza localmente a build de produção. |
 | `npm run lint` | Executa o linter Oxlint para verificar padrões de código. |
+| `npm run test` | Executa a suíte de testes unitários (Vitest). |
+| `npm run test:db` | Executa os testes de integração do banco (PostgreSQL real via PGlite, sem Docker). |
+| `npm run test:db:inspect` | Imprime o estado de privilégios (pg_default_acl, tabelas e matriz EXECUTE) após aplicar as migrations. |
+| `npm run test:db:state` | Resume o estado final das default privileges (por proprietário) e o resultado dos helpers de auditoria. |
 
 ---
 
@@ -329,14 +399,37 @@ O comando acima executa duas etapas:
 npm run preview
 ```
 
-### Publicação
+### Publicação (Cloudflare Pages)
 
-A publicação pode ser feita em qualquer serviço de hospedagem de aplicações estáticas, como:
+O Agenda Flow é publicado no **Cloudflare Pages**, integrado ao repositório do GitHub:
 
-- [Vercel](https://vercel.com/)
-- [Netlify](https://www.netlify.com/)
-- [GitHub Pages](https://pages.github.com/)
-- Servidor próprio com CDN
+| Configuração | Valor |
+| --- | --- |
+| Repositório | `leo-leite-dev/project-agenda-flow` |
+| Branch de produção | `main` |
+| Build command | `npm run build` |
+| Output directory | `dist` |
+| Endereço de produção | `https://project-agenda-flow.pages.dev` |
+
+Fluxo de publicação:
+
+1. As alterações são enviadas para a branch `main` do GitHub.
+2. A integração do Cloudflare Pages detecta o push e inicia o deployment automaticamente.
+3. O build (`tsc -b && vite build`) é executado e o conteúdo de `dist/` é publicado.
+
+Procedimento para futuras atualizações:
+
+```bash
+# 1. Validar localmente
+npm run lint
+npm run test
+npm run build
+
+# 2. Enviar para a branch de produção
+git push origin main
+```
+
+**Variáveis de ambiente no Cloudflare Pages:** as variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` precisam estar configuradas no projeto do Cloudflare Pages (*Settings > Environment variables*), com os mesmos valores do `.env.local` — apenas a chave pública (anon/publishable).
 
 > Antes de publicar, certifique-se de que as variáveis de ambiente de produção estão configuradas corretamente e de que nenhum arquivo sensível foi incluído no pacote.
 
@@ -344,7 +437,21 @@ A publicação pode ser feita em qualquer serviço de hospedagem de aplicações
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/` e **devem ser aplicadas apenas com autorização explícita**.
+As migrations estão versionadas em `supabase/migrations/` e **todas já foram aplicadas no banco remoto do Supabase**.
+
+Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
+
+> A verificação automatizada do banco remoto (`supabase/tests/verify_remote.sql`, somente leitura) ainda não possui evidência de execução registrada — recomenda-se executá-la no SQL Editor após qualquer mudança de schema.
+
+### Ordem de aplicação
+
+| Ordem | Migration | Conteúdo |
+| --- | --- | --- |
+| 1 | `20250127000000_initial_schema.sql` | Tabelas, índices, funções e trigger de criação de perfis. |
+| 2 | `20250127000001_rls_policies.sql` | Políticas RLS de todas as tabelas. |
+| 3 | `20250127000002_add_establishment_type.sql` | Coluna `type` e `create_establishment` com tipo. |
+| 4 | `20250127000003_ensure_user_profiles.sql` | Provisionamento garantido de perfis, backfill idempotente, `ensure_profile()`, autocorreção em `create_establishment`, schema privado para as funções internas, hardening do `search_path` e matriz de `EXECUTE`. |
+| 5 | `20250127000004_grants_and_rls_review.sql` | Privilégio mínimo nas tabelas (somente `SELECT` para `authenticated`), neutralização dos privilégios padrão herdados (`pg_default_acl`), revisão do RLS e verificação explícita de todo o estado de privilégios. |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -359,24 +466,70 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
+> **Banco com schema já criado manualmente:** se as tabelas foram criadas no SQL Editor (sem histórico de migrations), marque as migrations já aplicadas antes de aplicar as novas, para que o CLI não tente recriar o schema:
+>
+> ```bash
+> npx supabase migration repair --status applied 20250127000000
+> npx supabase migration repair --status applied 20250127000001
+> npx supabase migration repair --status applied 20250127000002
+> npx supabase db push
+> ```
+
 ### Opção 2: SQL Editor no Dashboard
 
 1. Acesse o [SQL Editor](https://supabase.com/dashboard/project/_/sql) do projeto.
-2. Execute o conteúdo dos arquivos de migration em ordem crescente:
-   - `20250127000000_initial_schema.sql`
-   - `20250127000001_rls_policies.sql`
+2. Execute o conteúdo dos arquivos de migration **em ordem crescente**.
+3. Ao final, execute `supabase/tests/verify_remote.sql` (somente leitura) para validar perfis, trigger, permissões e RLS.
+
+### Verificação após a aplicação
+
+```text
+supabase/tests/verify_remote.sql
+```
+
+O script é somente leitura e falha com uma mensagem explícita caso exista:
+
+- usuário autenticado sem perfil;
+- perfil duplicado ou órfão;
+- trigger `on_auth_user_created` ausente ou desabilitado;
+- assinatura divergente de `create_establishment` / ausência de `ensure_profile`;
+- coluna `type` ou constraint `valid_establishment_type` ausentes;
+- GRANTs faltando (ou permissões de escrita em `profiles` indevidas);
+- tabela pública com RLS desabilitado.
 
 ### Testes locais
 
 ```bash
-# Iniciar o stack local (Docker)
-npx supabase start
+# Testes unitários (Vitest)
+npm run test
 
-# Resetar o banco e aplicar migrations + seed
-npx supabase db reset
+# Testes de integração do banco — PostgreSQL real via PGlite (sem Docker)
+npm run test:db
 ```
 
-O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asserções que validam o isolamento entre estabelecimentos e a prevenção de escalonamento de privilégios.
+O runner `npm run test:db` (`supabase/tests/pglite/run.mjs`) aplica as migrations em ordem, executa o seed de asserções e roda a auditoria `verify_remote.sql` dentro de um PostgreSQL real (PGlite). O ambiente de teste emula o Supabase: schema `auth`, `auth.users`, `auth.uid()`, `auth.role()`, roles `anon`/`authenticated`/`service_role` e o `pgcrypto` no schema `extensions`.
+
+O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asserções que validam:
+
+| Cenário | Validação |
+| --- | --- |
+| Login social (Google) | Trigger cria o perfil com os metadados `name`/`picture`. |
+| Login e-mail/senha | Trigger cria o perfil com o metadado `full_name`. |
+| Recuperação de usuário sem perfil | `ensure_profile()` e `create_establishment` recriam o perfil. |
+| Cadastro de estabelecimento | Vínculo de proprietário e de membro `owner` criados atomicamente. |
+| Prevenção de duplicações | Perfil e `slug` únicos garantidos. |
+| Isolamento entre tenants | Membro de um estabelecimento não enxerga outro (estabelecimento, membros, permissões e perfis). |
+| Escalonamento de privilégios | `manager` não cria/promove `owner`; `authenticated` não escreve perfis, vínculos nem permissões. |
+| Concessões herdadas de `PUBLIC` | Nenhuma função ou tabela do schema `public` mantém privilégio padrão implícito. |
+
+> Os cenários rodam com `SET LOCAL ROLE authenticated` e claims JWT simuladas — ou seja, com o papel e a identidade equivalentes aos de um usuário real. O dono das tabelas ignora RLS e, portanto, não serviria como teste. Um papel sonda (`agenda_flow_probe`), que recebe temporariamente as permissões de escrita, é usado para provar que as **políticas** — e não apenas o `GRANT` — bloqueiam o escalonamento.
+>
+> Alternativa com o stack completo do Supabase (requer Docker):
+>
+> ```bash
+> npx supabase start
+> npx supabase db reset      # aplica migrations + seed com as asserções
+> ```
 
 ---
 
@@ -387,17 +540,25 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Sistema de estilos inicial com identidade visual definida.
 - ✅ Configuração de linting ativa.
 - ✅ Integração com Supabase (`@supabase/supabase-js`) e tipagens do schema.
-- ✅ Schema multi-tenant planejado e migrations versionadas preparadas.
+- ✅ Schema multi-tenant versionado em migrations.
 - ✅ Row Level Security (RLS) implementado em todas as tabelas de dados.
-- ✅ Estrutura de convites de funcionários com hash de token e verificação de identidade.
-- ✅ Seed de testes locais para validar isolamento e permissões.
+- ✅ Estrutura de convites de funcionários com hash de token e verificação de identidade (RPCs).
+- ✅ Seed e testes de integração locais para validar isolamento e permissões.
 - ✅ Roteamento com React Router.
 - ✅ Autenticação com Google OAuth e gerenciamento de sessão.
-- ✅ Autenticação tradicional com e-mail e senha preservada.
+- ✅ Autenticação tradicional com e-mail e senha.
 - ✅ Proteção de rotas e página de callback OAuth.
-- ⏳ Migrations ainda não aplicadas ao banco de produção.
-- ⏳ Módulos de agenda, clientes e finanças ainda não iniciados.
-- ⏳ Painel de funcionários e envio real de convites ainda não implementados.
+- ✅ Cadastro de estabelecimentos (barbearias/salões) com vínculo atômico do proprietário.
+- ✅ Seleção de estabelecimento e fluxo de primeiro acesso.
+- ✅ Dashboard administrativo (Visão geral) com navegação por módulos, checklist de configuração e indicadores futuros em estados vazios.
+- ✅ Provisionamento garantido de `public.profiles` para usuários Google e e-mail/senha (trigger, backfill idempotente e `ensure_profile()`).
+- ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
+- ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
+- ✅ Migrations 00000–00004 aplicadas no banco de produção do Supabase.
+- ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
+- ⏳ Auditoria automatizada do banco remoto (`verify_remote.sql`) sem evidência de execução registrada.
+- ⏳ Módulos de agenda, serviços, equipe, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada).
+- ⏳ Painel de funcionários e envio real de convites ainda não implementados (RPCs já existem no banco).
 
 Consulte o arquivo [`CHANGELOG.md`](./CHANGELOG.md) para acompanhar as mudanças realizadas.
 

@@ -1,0 +1,159 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import type { AuthResponse } from '@supabase/supabase-js'
+
+import { AuthContext, type AuthContextValue, type UserEstablishment } from '../../contexts/AuthContext'
+import { DashboardPage } from '../DashboardPage'
+import { DashboardModulePage } from '../DashboardModulePage'
+
+function establishmentFixture(overrides: Partial<UserEstablishment> = {}): UserEstablishment {
+  return {
+    id: 'est-1',
+    owner_id: 'user-1',
+    name: 'Barbearia Alpha',
+    slug: 'barbearia-alpha',
+    type: 'barbershop',
+    document: null,
+    phone: '+5511999990000',
+    email: 'contato@alpha.test',
+    address: { city: 'São Paulo', state: 'SP', address: 'Rua das Tesouras, 10' },
+    is_active: true,
+    created_at: '2026-01-15T10:00:00Z',
+    updated_at: '2026-01-15T10:00:00Z',
+    role: 'owner',
+    ...overrides,
+  }
+}
+
+function baseValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
+  return {
+    user: { id: 'user-1', email: 'owner@alpha.test' } as AuthContextValue['user'],
+    isLoading: false,
+    isAuthenticated: true,
+    establishments: [establishmentFixture()],
+    currentEstablishment: establishmentFixture(),
+    isLoadingEstablishments: false,
+    signInWithGoogle: async () => {},
+    signInWithEmail: async () => {},
+    signUpWithEmail: async () => ({}) as AuthResponse['data'],
+    signOut: vi.fn(async () => {}),
+    refreshEstablishments: async () => {},
+    selectEstablishment: () => {},
+    createEstablishment: async () => 'id',
+    error: null,
+    clearError: () => {},
+    ...overrides,
+  }
+}
+
+function renderDashboard(value: AuthContextValue) {
+  return render(
+    <MemoryRouter initialEntries={['/dashboard']}>
+      <AuthContext.Provider value={value}>
+        <Routes>
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/dashboard/agenda" element={<DashboardModulePage />} />
+          <Route path="/dashboard/servicos" element={<DashboardModulePage />} />
+          <Route path="/dashboard/equipe" element={<DashboardModulePage />} />
+          <Route path="/dashboard/configuracoes" element={<DashboardModulePage />} />
+          <Route path="/welcome" element={<div>WELCOME</div>} />
+          <Route path="/select-establishment" element={<div>SELECT</div>} />
+          <Route path="/login" element={<div>LOGIN</div>} />
+        </Routes>
+      </AuthContext.Provider>
+    </MemoryRouter>,
+  )
+}
+
+describe('DashboardPage (visão geral)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('mostra o nome real do estabelecimento e os dados do usuário', () => {
+    renderDashboard(baseValue())
+
+    expect(screen.getByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
+    expect(screen.getAllByText(/owner@alpha.test/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Barbearia/i).length).toBeGreaterThan(0)
+  })
+
+  it('exibe o checklist de configuração com as quatro etapas em breve', () => {
+    renderDashboard(baseValue())
+
+    expect(screen.getByText(/Preparação para os primeiros agendamentos/i)).toBeInTheDocument()
+    expect(screen.getByText(/Configurar horários de funcionamento/i)).toBeInTheDocument()
+    expect(screen.getByText(/Cadastrar os serviços oferecidos/i)).toBeInTheDocument()
+    expect(screen.getByText(/Adicionar profissionais à equipe/i)).toBeInTheDocument()
+    expect(screen.getByText(/Preparar a agenda de atendimentos/i)).toBeInTheDocument()
+    expect(screen.getByText(/0 de 4 concluídas/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/Em breve/i).length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('apresenta estados vazios honestos nos indicadores futuros', () => {
+    renderDashboard(baseValue())
+
+    expect(screen.getByText(/Agendamentos de hoje/i)).toBeInTheDocument()
+    expect(screen.getByText(/A agenda estará disponível em breve/i)).toBeInTheDocument()
+    expect(screen.getByText(/Faturamento/i)).toBeInTheDocument()
+    expect(screen.getByText(/O acompanhamento financeiro estará disponível em breve/i)).toBeInTheDocument()
+  })
+
+  it('navega para o módulo "Em breve" pelo checklist e pela sidebar', () => {
+    renderDashboard(baseValue())
+
+    fireEvent.click(screen.getByRole('link', { name: /Serviços • Em breve/i }))
+    expect(screen.getByRole('heading', { name: 'Serviços' })).toBeInTheDocument()
+    expect(screen.getByText(/Este módulo faz parte das próximas etapas/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('link', { name: /Agenda/i })[0])
+    expect(screen.getByRole('heading', { name: 'Agenda' })).toBeInTheDocument()
+  })
+
+  it('redireciona para /welcome quando o usuário não tem estabelecimentos', () => {
+    renderDashboard(baseValue({ establishments: [], currentEstablishment: null }))
+
+    expect(screen.getByText('WELCOME')).toBeInTheDocument()
+  })
+
+  it('redireciona para a seleção quando há mais de um estabelecimento sem escolha', () => {
+    renderDashboard(
+      baseValue({
+        establishments: [establishmentFixture(), establishmentFixture({ id: 'est-2', name: 'Salão Beta' })],
+        currentEstablishment: null,
+      }),
+    )
+
+    expect(screen.getByText('SELECT')).toBeInTheDocument()
+  })
+
+  it('redireciona módulo desconhecido para a visão geral', () => {
+    render(
+      <MemoryRouter initialEntries={['/dashboard/modulo-inexistente']}>
+        <AuthContext.Provider value={baseValue()}>
+          <Routes>
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/dashboard/:module" element={<DashboardModulePage />} />
+            <Route path="/login" element={<div>LOGIN</div>} />
+          </Routes>
+        </AuthContext.Provider>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('heading', { name: /Barbearia Alpha/i })).toBeInTheDocument()
+  })
+
+  it('encerra a sessão pelo menu do perfil', async () => {
+    const signOut = vi.fn(async () => {})
+    renderDashboard(baseValue({ signOut }))
+
+    fireEvent.click(screen.getByRole('button', { name: /owner@alpha.test/i }))
+
+    const signOutButton = await screen.findByRole('menuitem', { name: /Sair da conta/i })
+    fireEvent.click(signOutButton)
+
+    expect(signOut).toHaveBeenCalledTimes(1)
+    await screen.findByText('LOGIN')
+  })
+})

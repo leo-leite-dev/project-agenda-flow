@@ -6,6 +6,12 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+export interface EstablishmentAddress {
+  city?: string | null
+  state?: string | null
+  address?: string | null
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -49,10 +55,11 @@ export interface Database {
           owner_id: string
           name: string
           slug: string
+          type: 'barbershop' | 'salon'
           document: string | null
           phone: string | null
           email: string | null
-          address: Json | null
+          address: EstablishmentAddress | null
           is_active: boolean
           created_at: string
           updated_at: string
@@ -62,10 +69,11 @@ export interface Database {
           owner_id: string
           name: string
           slug: string
+          type?: 'barbershop' | 'salon'
           document?: string | null
           phone?: string | null
           email?: string | null
-          address?: Json | null
+          address?: EstablishmentAddress | null
           is_active?: boolean
           created_at?: string
           updated_at?: string
@@ -75,10 +83,11 @@ export interface Database {
           owner_id?: string
           name?: string
           slug?: string
+          type?: 'barbershop' | 'salon'
           document?: string | null
           phone?: string | null
           email?: string | null
-          address?: Json | null
+          address?: EstablishmentAddress | null
           is_active?: boolean
           created_at?: string
           updated_at?: string
@@ -233,14 +242,19 @@ export interface Database {
     }
     Views: Record<string, never>
     Functions: {
+      ensure_profile: {
+        Args: Record<string, never>
+        Returns: string
+      }
       create_establishment: {
         Args: {
           p_name: string
           p_slug: string
+          p_type?: string
           p_document?: string
           p_phone?: string
           p_email?: string
-          p_address?: Json
+          p_address?: EstablishmentAddress
         }
         Returns: string
       }
