@@ -1,16 +1,13 @@
 import { supabase } from './supabase'
+import { ROLE_LABELS, permissionLabel as presentationPermissionLabel } from './labels'
 
 export type TeamRole = 'owner' | 'manager' | 'professional' | 'receptionist'
 
 /** Cargos que podem ser atribuídos por esta etapa (sem transferência de propriedade). */
 export const ASSIGNABLE_ROLES: TeamRole[] = ['manager', 'professional', 'receptionist']
 
-export const TEAM_ROLE_LABELS: Record<TeamRole, string> = {
-  owner: 'Proprietário',
-  manager: 'Gerente',
-  professional: 'Profissional',
-  receptionist: 'Recepcionista',
-}
+/** Rótulos de apresentação centralizados em src/lib/labels.ts. */
+export const TEAM_ROLE_LABELS = ROLE_LABELS
 
 export function teamRoleLabel(role: string): string {
   return TEAM_ROLE_LABELS[role as TeamRole] ?? role
@@ -56,13 +53,9 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ key: string; label: string; perm
 
 export const ALL_PERMISSION_KEYS: string[] = PERMISSION_GROUPS.flatMap((group) => group.permissions)
 
+/** Descrição completa da permissão em português (rótulo centralizado). */
 export function permissionLabel(key: string): string {
-  const [group, action] = key.split('.')
-  const groupLabel = PERMISSION_GROUPS.find((item) => item.key === group)?.label ?? group
-  const actionLabel =
-    action === 'read' ? 'Visualizar' : action === 'write' ? 'Editar' : action === 'delete' ? 'Excluir' : action
-
-  return `${groupLabel} — ${actionLabel}`
+  return presentationPermissionLabel(key)
 }
 
 export interface TeamMemberProfile {

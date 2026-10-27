@@ -8,6 +8,7 @@ import {
   buildWhatsAppLink,
   type TeamRole,
 } from '../../lib/team'
+import { permissionActionLabel, permissionLabel } from '../../lib/labels'
 import { CloseIcon } from '../dashboard/icons'
 
 interface InviteMemberModalProps {
@@ -227,12 +228,13 @@ export function InviteMemberModal({
                       <label className="permission-grid__item" key={permission}>
                         <input
                           type="checkbox"
-                          aria-label={permission}
+                          aria-label={permissionLabel(permission)}
                           checked={permissions.includes(permission)}
                           onChange={() => togglePermission(permission)}
                           disabled={isSaving}
+                          title={permissionLabel(permission)}
                         />
-                        <span>{permission.split('.')[1]}</span>
+                        <span>{permissionActionLabel(permission)}</span>
                       </label>
                     ))}
                   </div>

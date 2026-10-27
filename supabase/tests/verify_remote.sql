@@ -52,6 +52,33 @@ BEGIN
 END $$;
 
 --------------------------------------------------------------------------------
+-- 1.1 Proteção contra exclusão acidental de dados de tenant
+--------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_unsafe integer;
+BEGIN
+  SELECT count(*) INTO v_unsafe
+  FROM pg_constraint c
+  JOIN pg_class source_table ON source_table.oid = c.conrelid
+  JOIN pg_namespace source_ns ON source_ns.oid = source_table.relnamespace
+  WHERE c.contype = 'f'
+    AND source_ns.nspname = 'public'
+    AND (
+      (source_table.relname = 'establishments' AND c.conname = 'establishments_owner_id_fkey')
+      OR (source_table.relname = 'establishment_members' AND c.conname = 'establishment_members_user_id_fkey')
+      OR (source_table.relname = 'establishment_invitations' AND c.conname = 'establishment_invitations_invited_by_fkey')
+    )
+    AND c.confdeltype = 'c';
+
+  IF v_unsafe > 0 THEN
+    RAISE EXCEPTION 'FALHA: % relação(ões) de perfil ainda usam ON DELETE CASCADE em dados de tenant.', v_unsafe;
+  END IF;
+
+  RAISE NOTICE 'OK: exclusão de perfil não usa cascata em proprietário, vínculo ou auditoria de convite.';
+END $$;
+
+--------------------------------------------------------------------------------
 -- 2. Trigger de criação automática de perfis
 --------------------------------------------------------------------------------
 DO $$
@@ -233,6 +260,74 @@ BEGIN
   END IF;
 END $$;
 
+--------------------------------------------------------------------------------
+-- 4.2 Integridade dos profissionais (somente leitura, etapa 7)
+--------------------------------------------------------------------------------
+-- Verifica (sem alterar nada):
+--   * as tabelas da etapa 7 existem com RLS habilitado;
+--   * nenhuma associação cruza estabelecimentos (FKs compostas);
+--   * nenhum profissional habilitado aponta para um membro de OUTRO tenant;
+--   * profissionais afetados pela desativação do próprio vínculo são
+--     listados (associações preservadas, elegibilidade suspensa).
+DO $$
+DECLARE
+  v_cross_professionals integer;
+  v_cross_associations integer;
+  v_inactive_professionals integer;
+BEGIN
+  IF to_regclass('public.establishment_professionals') IS NULL
+     OR to_regclass('public.establishment_professional_services') IS NULL THEN
+    RAISE NOTICE 'AVISO: tabelas da etapa 7 (profissionais) não estão presentes. Aplique a migration 20250127000009_professionals.sql.';
+    RETURN;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class
+    WHERE oid = 'public.establishment_professionals'::regclass AND relrowsecurity
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_class
+    WHERE oid = 'public.establishment_professional_services'::regclass AND relrowsecurity
+  ) THEN
+    RAISE EXCEPTION 'FALHA: RLS desabilitado nas tabelas de profissionais da etapa 7.';
+  END IF;
+
+  -- Nenhum profissional pode ocupar linha de estabelecimento distinto do
+  -- próprio vínculo de membro.
+  SELECT count(*) INTO v_cross_professionals
+  FROM public.establishment_professionals ep
+  JOIN public.establishment_members m ON m.id = ep.member_id
+  WHERE m.establishment_id <> ep.establishment_id;
+
+  IF v_cross_professionals > 0 THEN
+    RAISE EXCEPTION 'FALHA: %s profissional(is) com estabelecimento incompatível com o vínculo de membro.', v_cross_professionals;
+  END IF;
+
+  -- Nenhuma associação pode cruzar estabelecimentos.
+  SELECT count(*) INTO v_cross_associations
+  FROM public.establishment_professional_services ps
+  WHERE ps.establishment_id <> (
+        SELECT ep.establishment_id FROM public.establishment_professionals ep WHERE ep.id = ps.professional_id)
+     OR ps.establishment_id <> (
+        SELECT s.establishment_id FROM public.establishment_services s WHERE s.id = ps.service_id);
+
+  IF v_cross_associations > 0 THEN
+    RAISE EXCEPTION 'FALHA: %s associação(ões) cruzando estabelecimentos (FK composta violada).', v_cross_associations;
+  END IF;
+
+  RAISE NOTICE 'OK: nenhum profissional ou associação cruza estabelecimentos.';
+
+  SELECT count(*) INTO v_inactive_professionals
+  FROM public.establishment_professionals ep
+  JOIN public.establishment_members m ON m.id = ep.member_id
+  WHERE m.is_active = false;
+
+  IF v_inactive_professionals > 0 THEN
+    RAISE NOTICE 'AVISO: %s profissional(is) com vínculo de membro desativado (associações preservadas; nenhuma nova associação é aceita).', v_inactive_professionals;
+  ELSE
+    RAISE NOTICE 'OK: todo profissional habilitado possui vínculo ativo.';
+  END IF;
+END $$;
+
 -- (d) Detalhamento legível dos vínculos do tenant BarberLeo (somente leitura).
 --     Cole e execute separadamente no SQL Editor para inspecionar as linhas:
 --
@@ -271,7 +366,9 @@ DECLARE
     'public.establishment_members',
     'public.member_permissions',
     'public.establishment_invitations',
-    'public.establishment_services'
+    'public.establishment_services',
+    'public.establishment_professionals',
+    'public.establishment_professional_services'
   ];
   v_privilege text;
   v_privileges text[] := ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'];
@@ -626,7 +723,10 @@ BEGIN
       'update_establishment_member_role',
       'set_establishment_member_active',
       'set_establishment_member_permissions',
-      'get_my_pending_invitations'
+      'get_my_pending_invitations',
+      'set_establishment_professional',
+      'add_establishment_professional_service',
+      'remove_establishment_professional_service'
     )
     AND (
       has_function_privilege('anon', p.oid, 'EXECUTE')
@@ -686,7 +786,9 @@ BEGIN
         'establishment_members',
         'member_permissions',
         'establishment_invitations',
-        'establishment_services'
+        'establishment_services',
+        'establishment_professionals',
+        'establishment_professional_services'
       )
       AND NOT c.relrowsecurity
   LOOP
@@ -710,7 +812,9 @@ BEGIN
         'establishment_members',
         'member_permissions',
         'establishment_invitations',
-        'establishment_services'
+        'establishment_services',
+        'establishment_professionals',
+        'establishment_professional_services'
       )
   LOOP
     RAISE NOTICE 'AVISO: tabela publica fora do escopo do projeto sem RLS: %', r.relname;

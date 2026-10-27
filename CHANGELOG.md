@@ -8,6 +8,8 @@ O formato é baseado no [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 > **Correção do estabelecimento duplicado (Etapa 6.1):** a tela "Escolha um estabelecimento" exibia a mesma empresa duas vezes e o clique não avançava para o dashboard. A causa raiz era a consulta do frontend, que lia `public.establishment_members` sem filtrar pelo usuário autenticado — como a RLS permite que um membro leia os vínculos dos colegas do mesmo tenant (necessário para a tela de equipe), o resultado trazia o vínculo do proprietário e o do profissional (pessoas diferentes). A migration `00008` (integridade dos vínculos) foi confirmada como aplicada no Supabase remoto em 27/10/2026.
 >
 > **Estado da Etapa 6:** implementada e validada (lint aprovado, 115 testes unitários, 19/19 verificações de banco em PostgreSQL real e build aprovado). As migrations `00006`, `00007` e `00008` estão aplicadas no Supabase remoto. Limitações conhecidas do fluxo de convites: compartilhamento manual (sem serviço de e-mail transacional), convite vinculado ao e-mail (a autenticação por telefone não está habilitada), contexto do convite preservado apenas no navegador de origem e a ser validado no domínio de produção.
+>
+> **Estado da Etapa 7 (Gestão de Profissionais):** implementada e validada localmente (lint aprovado, **135 testes unitários**, **24/24 verificações de banco em PostgreSQL real** e build aprovado). As migrations `00009_professionals.sql` e `00010_profile_deletion_safety.sql` estão aplicadas no Supabase remoto. A auditoria remota somente leitura foi concluída sem falhas; o proprietário removeu intencionalmente os dados de teste e o banco está vazio de dados de aplicação.
 
 ### Corrigido
 
@@ -24,6 +26,18 @@ O formato é baseado no [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 - **Convites existentes revalidados no aceite**: convites antigos (criados fora do fluxo atual) são conferidos novamente em `accept_establishment_invitation` — não conseguem conceder cargo de proprietário, permissões acima das do concedente nem chaves inexistentes, sem criar vínculo.
 - **Migration 00008 sem nome fixo de constraint**: a detecção da unicidade de `public.establishment_members` passa a comentar o **objeto real existente** (constraint ou índice único, qualquer que seja o nome) em vez de um nome fixo, que fazia a migration falhar quando a unicidade já estava garantida por outro objeto. A idempotência e a ausência de exclusão de dados foram preservadas.
 
+### Alterado
+
+- **Tradução de cargos e permissões para pt-BR**: os cargos agora aparecem sempre como "Proprietário", "Gerente", "Profissional" e "Recepcionista" (inclusive no dashboard), e as grades de permissão das modais de convite e de cargo/permissões exibem ações em português ("Visualizar", "Editar", "Excluir") com `aria-label`/`title` descritivos ("Visualizar agendamentos", "Gerenciar equipe", ...). Os rótulos são centralizados no novo módulo de apresentação `src/lib/labels.ts`; **nenhuma chave técnica, cargo ou valor persistido no banco foi alterado**.
+- **Módulo Equipe com abas**: a tela ganhou as abas "Equipe" e "Profissionais" (mesma página, sem duplicação de gestão de funcionários), com resumo contando profissionais habilitados e sem serviços.
+- **Dashboard**: o papel do usuário na visão geral passou a usar o rótulo em português; o checklist e os indicadores exibem a etapa "Adicionar profissionais à equipe" com regra real de conclusão (ao menos um membro habilitado) e a aba de indicadores inclui o cartão "Profissionais" com dados reais.
+
+### Segurança
+
+- **Recuperação idempotente de perfis ausentes**: `supabase/tests/repair_missing_profiles.sql` insere somente perfis faltantes a partir de `auth.users`, preserva IDs e linhas existentes, não cria contas nem altera vínculos, e executa em transação.
+- **Proteção contra cascata de exclusão de perfil**: a migration `20250127000010_profile_deletion_safety.sql` troca `ON DELETE CASCADE` por `RESTRICT` nas relações de proprietário, funcionário e convite. Aplicação confirmada no Supabase remoto.
+- **Auditoria de FKs**: adicionado `supabase/tests/audit_profile_foreign_keys.sql` e ampliado `verify_remote.sql` para detectar cascatas perigosas, além de perfis ausentes, órfãos e falhas do trigger.
+
 ### Adicionado
 
 - Migration `20250127000008_membership_integrity.sql`:
@@ -38,6 +52,17 @@ O formato é baseado no [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.
 - Auditoria somente leitura dos vínculos (`supabase/tests/audit_membership_links.sql`): lista todos os vínculos, os grupos duplicados, os estabelecimentos sem proprietário ativo, os vínculos órfãos e as permissões que apontam para cada vínculo — com a correção SQL preparada e comentada (não executada).
 - Seção de integridade dos vínculos na auditoria `supabase/tests/verify_remote.sql` (unicidade, duplicados e proprietário ativo por estabelecimento).
 - Testes automatizados: deduplicação e resolução do estabelecimento ativo, persistência da escolha por usuário, listagem filtrada pelo usuário autenticado, seleção com redirecionamento para o dashboard, vínculo inativo sem acesso e cenário de Isolamento Multi-Tenant; no banco, unicidade do vínculo, recusa de convite para o próprio proprietário, ausência de vínculo duplicado e preservação do cargo.
+- **Gestão de Profissionais (Etapa 7 — migration `20250127000009_professionals.sql`, aplicada no remoto em 27/10/2026)**:
+  - tabelas `establishment_professionals` (habilitação do membro com `accepts_appointments` para pausa de atendimentos) e `establishment_professional_services` (associação N:N com `UNIQUE (professional_id, service_id)`);
+  - **integridade entre tenants garantida por FKs compostas** (`(member_id, establishment_id)`, `(professional_id, establishment_id)`, `(service_id, establishment_id)`) — um serviço de uma empresa não pode ser associado a um profissional de outra nem contornando a aplicação;
+  - RPCs exclusivas do proprietário: `set_establishment_professional` (habilitar/pausar, recusa vínculo desativado e é idempotente por membro), `add_establishment_professional_service` (exige serviço ativo do mesmo tenant, recusa duplicado) e `remove_establishment_professional_service`;
+  - RLS de leitura para membros do tenant, `authenticated` somente leitura nas tabelas novas, `anon` sem acesso e matriz de `EXECUTE` explícita;
+  - a pausa/reação de atendimentos NÃO altera vínculo, cargo nem permissões administrativas; associações e histórico são preservados (nada é excluído);
+  - interface: aba "Profissionais" no módulo Equipe com habilitação por seleção de membro, contagem de serviços, pausa/retomada, modal "Serviços do profissional" com o catálogo real do estabelecimento (serviços inativos não recebem novas associações, associações existentes permanecem visíveis) e estados de carregamento/vazio/erro/sucesso;
+  - dashboard com quantidade real de profissionais habilitados e sem serviços, e o checklist liberando a etapa de profissionais com regra real;
+  - testes de banco (seed) dos cenários 55 a 68: habilitação com cargos distintos, idempotência, autorização (gerente/profissional/dono alheio são recusados), associações N:N, duplicado, cross-tenant (RPC + FK composta em nível superusuário), serviço inativo, vínculo desativado, escrita direta recusada e leitura isolada por RLS — com vacuidade validada por mutação das guardas;
+  - testes de interface para a aba, habilitação, modal de serviços (inativo bloqueado para novas associações), modo somente leitura para não-proprietários;
+  - auditoria `verify_remote.sql` estendida às tabelas e RPCs de profissionais (RLS, campos cruzados e matriz de EXECUTE).
 
 > **Estado da Etapa 6:** implementada e validada localmente (lint, 83 testes unitários, 12/12 verificações de banco em PostgreSQL real e build). As migrations `00006` e `00007` permanecem **pendentes de aplicação no Supabase remoto** — a gestão de equipe, os convites e o onboarding priorizado por convite não funcionam em produção até a aplicação. Limitações conhecidas do fluxo de convites: compartilhamento manual (sem serviço de e-mail transacional), convite vinculado ao e-mail (a autenticação por telefone não está habilitada), contexto do convite preservado apenas no navegador de origem e a ser validado no domínio de produção.
 

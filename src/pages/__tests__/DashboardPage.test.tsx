@@ -6,13 +6,38 @@ import type { AuthResponse } from '@supabase/supabase-js'
 import { AuthContext, type AuthContextValue, type UserEstablishment } from '../../contexts/AuthContext'
 import { DashboardPage } from '../DashboardPage'
 import { DashboardModulePage } from '../DashboardModulePage'
+import type { EstablishmentProfessional } from '../../lib/professionals'
+
+function professionalFixture(overrides: Partial<EstablishmentProfessional> = {}): EstablishmentProfessional {
+  return {
+    id: 'pro-1',
+    member_id: 'mem-2',
+    user_id: 'user-2',
+    role: 'professional',
+    is_active: true,
+    accepts_appointments: true,
+    created_at: '2026-02-01T10:00:00Z',
+    full_name: 'Carlos Silva',
+    avatar_url: null,
+    services: [],
+    ...overrides,
+  }
+}
 
 const servicesMock = vi.hoisted(() => ({
   listServices: vi.fn(),
 }))
 
+const professionalsMock = vi.hoisted(() => ({
+  listEstablishmentProfessionals: vi.fn(),
+}))
+
 vi.mock('../../lib/services', () => ({
   listServices: servicesMock.listServices,
+}))
+
+vi.mock('../../lib/professionals', () => ({
+  listEstablishmentProfessionals: professionalsMock.listEstablishmentProfessionals,
 }))
 
 vi.mock('../../lib/supabase', () => ({
@@ -82,6 +107,7 @@ describe('DashboardPage (visão geral)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     servicesMock.listServices.mockResolvedValue([])
+    professionalsMock.listEstablishmentProfessionals.mockResolvedValue([])
   })
 
   it('mostra o nome real do estabelecimento e os dados do usuário', async () => {
@@ -92,7 +118,7 @@ describe('DashboardPage (visão geral)', () => {
     expect(screen.getAllByText(/Barbearia/i).length).toBeGreaterThan(0)
   })
 
-  it('exibe o checklist de configuração com as quatro etapas em breve', async () => {
+  it('exibe o checklist de configuração com as quatro etapas pendentes', async () => {
     renderDashboard(baseValue())
 
     expect(screen.getByText(/Preparação para os primeiros agendamentos/i)).toBeInTheDocument()
@@ -101,7 +127,48 @@ describe('DashboardPage (visão geral)', () => {
     expect(screen.getByText(/Adicionar profissionais à equipe/i)).toBeInTheDocument()
     expect(screen.getByText(/Preparar a agenda de atendimentos/i)).toBeInTheDocument()
     expect(screen.getByText('0 de 4 concluídas')).toBeInTheDocument()
-    expect(await screen.findAllByText(/Em breve/i).then((items) => items.length)).toBeGreaterThanOrEqual(4)
+    await screen.findByText(/Cadastrar serviços/i)
+    expect(screen.getByText(/Habilitar profissionais/i)).toBeInTheDocument()
+    expect(await screen.findAllByText('Em breve').then((items) => items.length)).toBeGreaterThanOrEqual(2)
+  })
+
+  it('exibe a quantidade real de profissionais habilitados e sem serviços', async () => {
+    professionalsMock.listEstablishmentProfessionals.mockResolvedValue([
+      professionalFixture({
+        id: 'pro-1',
+        full_name: 'Carlos Silva',
+        services: [{ id: 'svc-1', name: 'Corte', category: 'cabelo', is_active: true }],
+      }),
+      professionalFixture({
+        id: 'pro-2',
+        full_name: 'Mariana',
+        member_id: 'mem-3',
+        user_id: 'user-4',
+        services: [],
+      }),
+      professionalFixture({
+        id: 'pro-3',
+        full_name: 'Bruno',
+        member_id: 'mem-4',
+        user_id: 'user-5',
+        services: [],
+      }),
+    ])
+
+    renderDashboard(baseValue())
+
+    expect(await screen.findByText('3 habilitado(s) para atendimentos • 2 sem serviços')).toBeInTheDocument()
+    expect(screen.getByText('1 de 4 concluídas')).toBeInTheDocument()
+    expect(screen.getByText(/Equipe • Concluída/i)).toBeInTheDocument()
+  })
+
+  it('exibe estado de carregamento honesto quando os profissionais falham', async () => {
+    professionalsMock.listEstablishmentProfessionals.mockRejectedValue(new Error('offline'))
+
+    renderDashboard(baseValue())
+
+    expect(await screen.findByText('Carregando...')).toBeInTheDocument()
+    expect(screen.getByText('0 de 4 concluídas')).toBeInTheDocument()
   })
 
   it('marca a etapa de serviços como concluída quando há um serviço ativo', async () => {
@@ -127,7 +194,7 @@ describe('DashboardPage (visão geral)', () => {
   it('navega para o módulo "Em breve" pelo checklist e pela sidebar', () => {
     renderDashboard(baseValue())
 
-    fireEvent.click(screen.getByRole('link', { name: /Equipe • Em breve/i }))
+    fireEvent.click(screen.getByRole('link', { name: /Equipe • Habilitar profissionais/i }))
     expect(screen.getByRole('heading', { name: 'Equipe' })).toBeInTheDocument()
     expect(screen.getByText(/Este módulo faz parte das próximas etapas/i)).toBeInTheDocument()
 

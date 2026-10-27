@@ -69,7 +69,9 @@ describe('permissões granulares', () => {
       'staff',
       'settings',
     ])
-    expect(permissionLabel('clients.read')).toBe('Clientes — Visualizar')
+    // A tradução é centralizada em src/lib/labels.ts (pt-BR), sem alterar as
+    // chaves usadas na autorização.
+    expect(permissionLabel('clients.read')).toBe('Visualizar clientes')
   })
 
   it('usa exatamente as chaves aceitas pelo banco na matriz do projeto', () => {

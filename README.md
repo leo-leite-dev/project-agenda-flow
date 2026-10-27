@@ -40,7 +40,9 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Identificação do estabelecimento ativo | Cabeçalho e visão geral exibem o nome, tipo e papel do estabelecimento ativo, sempre a partir dos dados reais da sessão. |
 | Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
 | Gestão de serviços (Etapa 5) | Catálogo por estabelecimento: cadastro em modal, edição, ativação/desativação lógica com confirmação, busca por nome, filtros por categoria e status, preços em centavos formatados em R$. Escritas por RPCs que validam autenticação e papel de proprietário no banco. |
-| Gestão de equipe e convites (Etapa 6) | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. |
+| Gestão de equipe e convites (Etapa 6) | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. |
+| Gestão de Profissionais (Etapa 7) | Aba "Profissionais" na Gestão de Equipe: habilita/pausa membros para atendimentos (qualquer cargo), associa serviços ao profissional (N:N) com catálogo real do estabelecimento e quantidades reais no dashboard. Escritas por RPCs exclusivas do proprietário; integridade entre tenants garantida por FKs compostas. **Migration 00009 aplicada no remoto.** |
+| Tradução de cargos e permissões (pt-BR) | Rótulos de apresentação centralizados em `src/lib/labels.ts`: cargos ("Proprietário", "Gerente"...) e as 17 chaves de permissão descritas em português nas modais de convite e de cargo/permissões (com `aria-label` acessíveis). As chaves técnicas seguem inalteradas para o banco. |
 | Navegação responsiva | Layout adaptativo: sidebar fixa no desktop e drawer com backdrop em tablets e smartphones. |
 | Logout | Encerramento de sessão pelo menu do perfil do dashboard. |
 | Roteamento protegido | Rotas públicas e protegidas com React Router e `ProtectedRoute`. |
@@ -84,6 +86,19 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 - **Permissões do convite**: validadas **no PostgreSQL** (nunca apenas no frontend). Só são aceitas chaves da matriz do projeto (18 chaves de `appointments`, `clients`, `finances`, `services`, `staff` e `settings`) e um gerente concede **apenas as permissões que possui** (delegação); o proprietário pode conceder qualquer chave válida. Permissão desconhecida ou não autorizada é recusada com mensagem explícita.
 - **Convites já existentes**: são **revalidados no aceite** — um convite antigo (criado fora do fluxo atual) não consegue conceder cargo de proprietário nem permissões acima das do concedente.
 
+### Gestão de Profissionais — uso e regras
+
+- **Aba "Profissionais"** dentro do módulo **Equipe** (sem página duplicada de funcionários). O proprietário habilita, pausa e associa; os demais cargos apenas acompanham.
+- **Cargo ≠ habilitação**: a habilitação de um membro como profissional de atendimento é um conceito independente do cargo (tabela `establishment_professionals`). Qualquer membro ativo — `owner`, `manager`, `professional` ou `receptionist` — pode ser habilitado; o cargo continua governando as permissões administrativas.
+- **Habilitação e pausa**: `set_establishment_professional` (RPC do banco, somente proprietário) cria/atualiza a habilitação com `accepts_appointments`. Pausar NÃO desativa o vínculo, NÃO altera o cargo nem as permissões; pausado, o profissional deixa de ser elegível para novos agendamentos (futuros).
+- **Associação de serviços**: N:N em `establishment_professional_services` (sem duplicidade — `UNIQUE (professional_id, service_id)`). O mesmo serviço pode ter vários profissionais; um profissional pode ter vários serviços. O preço e a duração continuam definidos apenas no cadastro do serviço.
+- **Modal "Serviços do profissional"**: exibe o catálogo REAL do estabelecimento ativo; marcar/desmarcar salva no banco por RPC com feedback de sucesso/erro e salvamento único por clique. Cada alternância chama `add_establishment_professional_service` ou `remove_establishment_professional_service`.
+- **Serviços inativos**: não recebem NOVAS associações (recusados no PostgreSQL); associações que já existam são **preservadas** e continuam visíveis com a etiqueta "Inativo" até o serviço ser reativado.
+- **Vínculos desativados**: membro com vínculo desativado não recebe nova habilitação nem novas associações; os registros existentes são preservados (nada é excluído) e a elegibilidade volta quando o vínculo é reativado.
+- **Isolamento entre tenants ao nível do banco**: as FKs COMPOSTAS `(member_id, establishment_id)`, `(professional_id, establishment_id)` e `(service_id, establishment_id)` recusam qualquer associação que cruze estabelecimentos, mesmo contornando a aplicação; `authenticated` tem somente leitura nessas tabelas e `anon` não tem acesso.
+- **Dashboard**: o indicador "Profissionais" usa dados reais (habilitados e sem serviços) e a etapa "Adicionar profissionais à equipe" do checklist fica concluída quando existe ao menos um membro habilitado.
+- **Preparação para a agenda**: a estrutura pronta (`establishment_professional_services`) já permite um futuro agendamento identificar estabelecimento, serviço e profissional habilitado; calendário, horários e reservas NÃO fazem parte desta etapa.
+
 ### Vínculos do usuário e seleção de estabelecimento — regras
 
 - **Um vínculo por estabelecimento**: um usuário possui **no máximo um vínculo efetivo** com determinado estabelecimento, com um cargo definido nesse vínculo. O mesmo usuário pode ter vínculos em **empresas diferentes**. A unicidade é garantida no banco pela constraint `UNIQUE (establishment_id, user_id)`.
@@ -100,12 +115,10 @@ Funcionalidades planejadas para as próximas etapas (ainda não implementadas):
 
 - **Evolução do catálogo de serviços** — categorias personalizadas e paginação (o cadastro, edição e controle de status já estão implementados).
 - **Gestão de equipe** — invitation por telefone com verificação de telefone, permissões por módulo mais refinadas e auditoria de alterações. *(A gestão de equipe por e-mail está implementada na etapa 6.)*
-- **Gestão de funcionários** — profissionais do estabelecimento e papéis.
 - **Horários de funcionamento** — dias e horários de atendimento.
-- **Agenda de atendimentos** — visualização diária, semanal e mensal.
+- **Agenda de atendimentos** — visualização diária, semanal e mensal, com registro por profissional e serviço (a estrutura de profissionais e serviços já está pronta na etapa 7).
 - **Cadastro de clientes** — histórico de atendimentos, preferências e contato.
 - **Gestão financeira** — receitas, despesas e relatórios.
-- **Convites de funcionários** — interface para criação e aceite de convites (as RPCs já existem no banco).
 - **Permissões administrativas mais completas** — gestão de permissões granulares por membro.
 - **Área administrativa global da plataforma** — visão operacional entre estabelecimentos.
 - **Notificações** — lembretes por e-mail ou WhatsApp.
@@ -178,7 +191,8 @@ agenda-flow/
 │   │   ├── 20250127000005_establishment_services.sql
 │   │   ├── 20250127000006_team_management.sql
 │   │   ├── 20250127000007_pending_invitations.sql
-│   │   └── 20250127000008_membership_integrity.sql
+│   │   ├── 20250127000008_membership_integrity.sql
+│   │   └── 20250127000009_professionals.sql
 │   └── tests/            # Testes e auditoria do banco
 │       ├── verify_remote.sql         # Auditoria somente leitura (SQL Editor)
 │       ├── audit_membership_links.sql # Auditoria somente leitura dos vínculos
@@ -196,13 +210,20 @@ agenda-flow/
 └── src/                  # Código-fonte da aplicação
     ├── components/       # Componentes reutilizáveis
     │   ├── ProtectedRoute.tsx
-    │   └── dashboard/    # Componentes do dashboard administrativo
-    │       ├── DashboardHeader.tsx
-    │       ├── DashboardLayout.tsx
-    │       ├── DashboardSidebar.tsx
-    │       ├── ModulePlaceholder.tsx
-    │       ├── icons.tsx
-    │       └── navigation.ts
+    │   ├── dashboard/    # Componentes do dashboard administrativo
+    │   │   ├── DashboardHeader.tsx
+    │   │   ├── DashboardLayout.tsx
+    │   │   ├── DashboardSidebar.tsx
+    │   │   ├── ModulePlaceholder.tsx
+    │   │   ├── icons.tsx
+    │   │   └── navigation.ts
+    │   ├── services/     # Componentes da gestão de serviços
+    │   │   ├── ConfirmDialog.tsx
+    │   │   └── ServiceFormModal.tsx
+    │   └── team/         # Componentes da gestão de equipe e profissionais
+    │       ├── InviteMemberModal.tsx
+    │       ├── MemberPermissionsModal.tsx
+    │       └── ProfessionalServicesModal.tsx
     ├── contexts/         # Contextos React
     │   ├── AuthContext.ts
     │   └── AuthProvider.tsx
@@ -214,9 +235,16 @@ agenda-flow/
     ├── lib/              # Utilitários e integrações
     │   ├── database.types.ts
     │   ├── establishments.ts
+    │   ├── labels.ts        # Rótulos de apresentação (cargos e permissões em pt-BR)
+    │   ├── professionals.ts # Gestão de profissionais e serviços associados
+    │   ├── services.ts      # Catálogo de serviços do estabelecimento
+    │   ├── team.ts          # Equipe, convites e matriz de permissões
+    │   ├── onboarding.ts    # Decisão de primeiro acesso
+    │   ├── authRedirect.ts  # Redirecionamentos de autenticação
     │   ├── supabase.ts
     │   └── utils.ts
     ├── pages/            # Páginas da aplicação
+    │   ├── AcceptInvitationPage.tsx
     │   ├── AuthCallbackPage.tsx
     │   ├── CreateEstablishmentPage.tsx
     │   ├── DashboardModulePage.tsx
@@ -224,6 +252,8 @@ agenda-flow/
     │   ├── HomePage.tsx
     │   ├── LoginPage.tsx
     │   ├── SelectEstablishmentPage.tsx
+    │   ├── ServicesPage.tsx
+    │   ├── TeamPage.tsx
     │   └── WelcomePage.tsx
     ├── App.css           # Estilos da aplicação
     ├── App.tsx           # Configuração de rotas
@@ -372,6 +402,9 @@ profiles (1:1)
 | `establishment_members` | Vínculo entre usuário e estabelecimento, com papel. |
 | `member_permissions` | Permissões granulares opcionais por vínculo. |
 | `establishment_invitations` | Convites individuais, com token hasheado e validade. |
+| `establishment_services` | Catálogo de serviços de cada estabelecimento (preço em centavos). |
+| `establishment_professionals` | Habilitação de um membro como profissional de atendimento (incl. pausa de atendimentos). |
+| `establishment_professional_services` | Associação N:N entre profissionais e serviços, por estabelecimento. |
 
 ### Arquitetura de permissões
 
@@ -395,6 +428,8 @@ profiles (1:1)
 | `professional` | Profissional de atendimento. Acesso à agenda e clientes, conforme permissões. |
 | `receptionist` | Recepcionista. Acesso limitado à agenda e clientes. |
 
+> Qualquer um desses papéis pode ser **habilitado como profissional de atendimento** (etapa 7): o cargo governa as permissões administrativas, e a habilitação governa a elegibilidade para receber serviços/atendimentos.
+
 ### Princípios de segurança
 
 - RLS ativado em todas as tabelas de dados.
@@ -411,9 +446,11 @@ profiles (1:1)
 - O fluxo de convites **não transfere propriedade**: o cargo `owner` não é concedível por convite, `establishments.owner_id` é preservado e o vínculo do proprietário continua único.
 - As permissões concedidas por convite são validadas no PostgreSQL (matriz do projeto + delegação): chave desconhecida, permissão acima dos poderes do concedente ou convite de administrador por gerente são recusados.
 - Apenas proprietários podem promover/cadastrar outros proprietários ou gestores.
+- **Profissionais (etapa 7)**: as tabelas `establishment_professionals` e `establishment_professional_services` têm apenas leitura via RLS para membros do tenant; as escritas são RPCs exclusivas do proprietário, e as FKs compostas `(member_id, establishment_id)`, `(professional_id, establishment_id)` e `(service_id, establishment_id)` recusam associações que cruzem estabelecimentos no nível do banco.
 - Convites armazenam hash SHA-256 do token; a identidade do destinatário é verificada no aceite.
 - Nenhuma chave privada do Supabase é armazenada no código ou exposta ao navegador.
 - `public.profiles` não aceita `INSERT`/`DELETE` direto do role `authenticated`: perfis só são criados pelo trigger, pelo backfill ou por `ensure_profile()`.
+- A migration `20250127000010_profile_deletion_safety.sql` substitui cascatas de exclusão em `establishments.owner_id`, `establishment_members.user_id` e `establishment_invitations.invited_by` por `RESTRICT`, protegendo empresas, vínculos e histórico de convites contra exclusão acidental de perfil. **Aplicação confirmada no Supabase remoto.**
 - Concessões automáticas (`ALTER DEFAULT PRIVILEGES`) foram **neutralizadas para os objetos do projeto**: as default privileges do role `postgres` (que cria as tabelas e funções do Agenda Flow) para `PUBLIC`/`anon`/`authenticated` são revogadas — incluindo `TRUNCATE`, `REFERENCES`, `TRIGGER` e `MAINTAIN`. As default privileges de papéis internos da plataforma (ex.: `supabase_admin`) **não são alteráveis** pelo role `postgres` e, por isso, são preservadas e apenas reportadas na auditoria.
 
 ---
@@ -490,11 +527,11 @@ git push origin main
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00008 registradas como aplicadas no Supabase remoto**.
+As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00010 registradas como aplicadas no Supabase remoto**. As migrations **00009 (profissionais)** e **00010 (proteção contra exclusões acidentais)** estão aplicadas no remoto.
 
 Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
 
-> A verificação automatizada do banco remoto (`supabase/tests/verify_remote.sql`, somente leitura) ainda não possui evidência de execução registrada — recomenda-se executá-la no SQL Editor após qualquer mudança de schema.
+> A verificação automatizada do banco remoto (`supabase/tests/verify_remote.sql`, somente leitura) foi executada após a aplicação da migration 00010 e concluída sem falhas. O banco remoto está atualmente vazio de dados de aplicação (0 usuários, perfis, estabelecimentos e vínculos), conforme a decisão do proprietário de remover os dados de teste.
 
 ### Ordem de aplicação
 
@@ -509,6 +546,8 @@ Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez 
 | 7 | `20250127000006_team_management.sql` | Gestão de equipe: RPCs de cargo, situação de vínculo e permissões (somente proprietário), bloqueio de convites duplicados, aceite de convite serializado com `FOR UPDATE`, isolamento do vínculo desativado e privilégio mínimo nas tabelas administrativas. **Aplicação confirmada pelo histórico remoto.** |
 | 8 | `20250127000007_pending_invitations.sql` | RPC `get_my_pending_invitations` (somente leitura) para priorizar o aceite do convite no onboarding. **Aplicação confirmada pelo histórico remoto.** |
 | 9 | `20250127000008_membership_integrity.sql` | Integridade dos vínculos: garante a constraint `UNIQUE (establishment_id, user_id)` (detectada por colunas, não por nome), recusa convite para contato que já pertence ao estabelecimento, **restringe o convite aos cargos de funcionário** (`manager`, `professional`, `receptionist` — sem transferência de propriedade), **valida as permissões concedidas no PostgreSQL** (chaves da matriz do projeto e delegação limitada aos próprios poderes do gerente) e revalida o convite no aceite contra escalonamento de privilégios. **Aplicação confirmada pelo histórico remoto.** |
+| 10 | `20250127000009_professionals.sql` | Etapa 7: habilitação de profissionais de atendimento (`establishment_professionals`, com `accepts_appointments` para pausa) e associação N:N com serviços (`establishment_professional_services`, unicidade por par). RLS de leitura para membros do tenant, RPCs exclusivas do proprietário (habilitar/pausar, associar/remover) e **FKs compostas** que impedem associação entre estabelecimentos no nível do banco. **Aplicação confirmada pelo histórico remoto em 27/10/2026.** |
+| 11 | `20250127000010_profile_deletion_safety.sql` | Troca cascatas de exclusão de perfil por `RESTRICT` nas relações de proprietário, funcionário e convite, preservando dados de tenant e exigindo operação administrativa explícita para exclusões definitivas. **Aplicação confirmada pelo histórico remoto.** |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -523,7 +562,7 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-> O histórico remoto já contém 00000–00005. Não é necessário `migration repair` nem reaplicar arquivos SQL desta entrega. Para futuras migrations, confira primeiro `npx supabase migration list --linked`; alterações no banco exigem autorização específica.
+> O histórico remoto já contém 00000–00010. Não é necessário `migration repair` nem reaplicar arquivos SQL desta entrega. Para futuras migrations, confira primeiro `npx supabase migration list --linked`; alterações no banco exigem autorização específica.
 
 ### Opção 2: SQL Editor no Dashboard
 
@@ -545,7 +584,9 @@ O script é somente leitura e falha com uma mensagem explícita caso exista:
 - assinatura divergente de `create_establishment` / ausência de `ensure_profile`;
 - coluna `type` ou constraint `valid_establishment_type` ausentes;
 - GRANTs faltando (ou permissões de escrita em `profiles` indevidas);
-- tabela pública com RLS desabilitado.
+- tabela pública com RLS desabilitado;
+- profissional ou associação de serviços cruzando estabelecimentos (etapa 7);
+- matriz de `EXECUTE` incorreta nas RPCs de profissionais.
 
 ### Testes locais
 
@@ -571,6 +612,8 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 | Isolamento entre tenants | Membro de um estabelecimento não enxerga outro (estabelecimento, membros, permissões e perfis). |
 | Escalonamento de privilégios | `manager` não cria/promove `owner`; `authenticated` não escreve perfis, vínculos nem permissões. |
 | Gestão de serviços | Cadastro e edição persistidos, ativação/desativação lógica, valores inválidos recusados, isolamento entre estabelecimentos, bloqueio de gestor/profissional/outro proprietário e recusa de escrita direta. Os testes negativos não capturam a própria falha de asserção. |
+| Gestão de Profissionais (etapa 7) | Habilitação de membros com cargos distintos, pausa sem desativar o vínculo, associações N:N persistidas, duplicado e cross-tenant recusados (RPC + FK composta), serviço inativo sem nova associação (associação antiga preservada), vínculo desativado inelegível com histórico preservado, autenticação obrigatória, recusa de escrita direta e leitura isolada por RLS. As asserções são vacuidade-prova (mutações das guardas provocam falha). |
+| Tradução de rótulos | A matriz `PERMISSION_LABELS` cobre exatamente as 17 chaves do CHECK do banco; chaves desconhecidas caem para o valor técnico (sem tradução inventada); cargos recebem rótulo pt-BR centralizado. |
 | Concessões herdadas de `PUBLIC` | Nenhuma função ou tabela do schema `public` mantém privilégio padrão implícito. |
 
 > Os cenários rodam com `SET LOCAL ROLE authenticated` e claims JWT simuladas — ou seja, com o papel e a identidade equivalentes aos de um usuário real. O dono das tabelas ignora RLS e, portanto, não serviria como teste. Um papel sonda (`agenda_flow_probe`), que recebe temporariamente as permissões de escrita, é usado para provar que as **políticas** — e não apenas o `GRANT` — bloqueiam o escalonamento.
@@ -607,13 +650,16 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Provisionamento garantido de `public.profiles` para usuários Google e e-mail/senha (trigger, backfill idempotente e `ensure_profile()`).
 - ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
 - ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
-- ✅ Migrations 00000–00008 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
+- ✅ Migrations 00000–00010 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
 - ✅ Etapa 6 (gestão de equipe, convites e integridade dos vínculos) aplicada no remoto e publicada no GitHub/Cloudflare Pages.
 - ✅ Gestão de serviços (Etapa 5): tela funcional, RPCs, migration 00005 e testes automatizados.
+- ✅ Gestão de Profissionais (Etapa 7): aba "Profissionais" na Equipe, habilitação/pausa de atendimentos e associação serviço↔profissional; migration 00009 aplicada no Supabase remoto.
+- ✅ Rótulos de cargos e permissões em português centralizados (`src/lib/labels.ts`), sem alterar chaves técnicas do banco.
 - ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
 - As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` devem estar configuradas no ambiente de produção do Cloudflare Pages; a validação manual autenticada continua necessária após cada publicação.
-- ⏳ Auditoria automatizada do banco remoto (`verify_remote.sql`) sem evidência de execução registrada.
-- ⏳ Módulos de agenda, equipe, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada).
+- ✅ Auditoria automatizada do banco remoto (`verify_remote.sql`) executada após a aplicação da migration 00010, sem inconsistências críticas; o proprietário removeu intencionalmente os dados de teste e o banco está vazio de dados de aplicação.
+- ⏳ Módulos de agenda, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada; profissionais e serviços estão prontos para a agenda).
+- ⏳ Próxima etapa: Horários e Disponibilidade, com definição de horários de funcionamento e disponibilidade de atendimento.
 - ⏳ Painel de funcionários e envio real de convites ainda não implementados (RPCs já existem no banco).
 
 Consulte o arquivo [`CHANGELOG.md`](./CHANGELOG.md) para acompanhar as mudanças realizadas.

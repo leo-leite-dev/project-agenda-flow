@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthContext, type AuthContextValue, type UserEstablishment } from '../../contexts/AuthContext'
 import { TeamPage } from '../TeamPage'
 import type { TeamInvitation, TeamMember } from '../../lib/team'
+import type { EstablishmentProfessional } from '../../lib/professionals'
 
 const teamMock = vi.hoisted(() => ({
   listTeamMembers: vi.fn(),
@@ -17,6 +18,17 @@ const teamMock = vi.hoisted(() => ({
   setMemberPermissions: vi.fn(),
 }))
 
+const professionalMock = vi.hoisted(() => ({
+  listEstablishmentProfessionals: vi.fn(),
+  setProfessionalEnabled: vi.fn(),
+  addProfessionalService: vi.fn(),
+  removeProfessionalService: vi.fn(),
+}))
+
+const servicesMock = vi.hoisted(() => ({
+  listServices: vi.fn(),
+}))
+
 vi.mock('../../lib/team', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   listTeamMembers: teamMock.listTeamMembers,
@@ -27,6 +39,18 @@ vi.mock('../../lib/team', async (importOriginal) => ({
   updateMemberRole: teamMock.updateMemberRole,
   setMemberActive: teamMock.setMemberActive,
   setMemberPermissions: teamMock.setMemberPermissions,
+}))
+
+vi.mock('../../lib/professionals', () => ({
+  listEstablishmentProfessionals: professionalMock.listEstablishmentProfessionals,
+  setProfessionalEnabled: professionalMock.setProfessionalEnabled,
+  addProfessionalService: professionalMock.addProfessionalService,
+  removeProfessionalService: professionalMock.removeProfessionalService,
+}))
+
+vi.mock('../../lib/services', () => ({
+  listServices: servicesMock.listServices,
+  serviceCategoryLabel: (category: string) => category,
 }))
 
 vi.mock('../../lib/supabase', () => ({ supabase: {} }))
@@ -78,6 +102,22 @@ function invitationFixture(overrides: Partial<TeamInvitation> = {}): TeamInvitat
   }
 }
 
+function professionalFixture(overrides: Partial<EstablishmentProfessional> = {}): EstablishmentProfessional {
+  return {
+    id: 'pro-1',
+    member_id: 'mem-1',
+    user_id: 'user-2',
+    role: 'professional',
+    is_active: true,
+    accepts_appointments: true,
+    created_at: '2026-02-01T10:00:00Z',
+    full_name: 'Ana Souza',
+    avatar_url: null,
+    services: [],
+    ...overrides,
+  }
+}
+
 function baseValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
   return {
     user: { id: 'user-1', email: 'owner@alpha.test' } as AuthContextValue['user'],
@@ -122,6 +162,11 @@ describe('TeamPage', () => {
     teamMock.setMemberActive.mockResolvedValue(undefined)
     teamMock.setMemberPermissions.mockResolvedValue(undefined)
     teamMock.cancelTeamInvitation.mockResolvedValue(undefined)
+    professionalMock.listEstablishmentProfessionals.mockResolvedValue([])
+    professionalMock.setProfessionalEnabled.mockResolvedValue(undefined)
+    professionalMock.addProfessionalService.mockResolvedValue(undefined)
+    professionalMock.removeProfessionalService.mockResolvedValue(undefined)
+    servicesMock.listServices.mockResolvedValue([])
   })
 
   it('lista os membros reais com cargo, situação e data de entrada', async () => {
@@ -230,7 +275,7 @@ describe('TeamPage', () => {
 
     const dialog = await screen.findByRole('dialog')
     fireEvent.change(within(dialog).getByLabelText('Cargo do membro'), { target: { value: 'manager' } })
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'finances.read' }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Visualizar informações financeiras' }))
 
     fireEvent.click(within(dialog).getByRole('button', { name: /Salvar alterações/i }))
 
@@ -240,6 +285,122 @@ describe('TeamPage', () => {
     })
 
     expect(await screen.findByText(/Membro atualizado com sucesso/i)).toBeInTheDocument()
+  })
+
+  it('habilita um membro como profissional pela seção Profissionais', async () => {
+    teamMock.listTeamMembers.mockResolvedValue([memberFixture()])
+
+    renderTeam(baseValue())
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profissionais' }))
+
+    fireEvent.change(screen.getByLabelText('Habilitar profissional'), { target: { value: 'mem-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Habilitar profissional' }))
+
+    await waitFor(() => {
+      expect(professionalMock.setProfessionalEnabled).toHaveBeenCalledWith('mem-1', true)
+    })
+
+    expect(
+      await screen.findByText(/agora é profissional de atendimento/i),
+    ).toBeInTheDocument()
+  })
+
+  it('pausa os atendimentos do profissional sem desativar a conta (status exibido em pausa)', async () => {
+    professionalMock.listEstablishmentProfessionals.mockResolvedValue([
+      professionalFixture(),
+    ])
+
+    renderTeam(baseValue())
+
+    // A lista de profissionais é carregada desde a abertura (os dados são
+    // reais); o status de atendimentos aparece após trocar de aba.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profissionais' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Pausar atendimentos' }))
+
+    await waitFor(() => {
+      expect(professionalMock.setProfessionalEnabled).toHaveBeenCalledWith('mem-1', false)
+    })
+
+    expect(await screen.findByText(/Atendimentos pausados para Ana Souza/i)).toBeInTheDocument()
+  })
+
+  it('lista os serviços associados e o responsivo mostra a contagem por profissional', async () => {
+    professionalMock.listEstablishmentProfessionals.mockResolvedValue([
+      professionalFixture({
+        services: [
+          { id: 'svc-1', name: 'Corte Masculino', category: 'cabelo', is_active: true },
+          { id: 'svc-2', name: 'Barba', category: 'barba', is_active: true },
+        ],
+      }),
+      professionalFixture({
+        id: 'pro-2',
+        member_id: 'mem-3',
+        user_id: 'user-4',
+        full_name: 'Bruno Lima',
+        services: [],
+      }),
+    ])
+
+    renderTeam(baseValue())
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profissionais' }))
+
+    expect(await screen.findByText('2 serviço(s) associado(s)')).toBeInTheDocument()
+    expect(screen.getByText('0 serviço(s) associado(s)')).toBeInTheDocument()
+    expect(screen.getByText(/2 profissional\(is\) habilitado\(s\) • 1 sem serviços/)).toBeInTheDocument()
+    expect(screen.getAllByText('Recebe atendimentos').length).toBe(2)
+  })
+
+  it('o botão para habilitar fica desabilitado sem membro selecionado e não habilita para não-proprietário', async () => {
+    teamMock.listTeamMembers.mockResolvedValue([memberFixture()])
+
+    renderTeam(baseValue())
+
+    await screen.findByText('Ana Souza')
+    fireEvent.click(screen.getByRole('tab', { name: 'Profissionais' }))
+
+    expect(screen.getByRole('button', { name: 'Habilitar profissional' })).toBeDisabled()
+
+    // Sem membro selecionado, nenhuma RPC é chamada.
+    expect(professionalMock.setProfessionalEnabled).not.toHaveBeenCalled()
+  })
+
+  it('associa e remove serviços do profissional, evitando salvamento duplicado', async () => {
+    professionalMock.listEstablishmentProfessionals.mockResolvedValue([
+      professionalFixture({
+        services: [{ id: 'svc-1', name: 'Corte Masculino', category: 'cabelo', is_active: true }],
+      }),
+    ])
+    servicesMock.listServices.mockResolvedValue([
+      { id: 'svc-1', establishment_id: 'est-1', name: 'Corte Masculino', description: null, category: 'cabelo', duration_minutes: 30, price_cents: 3500, is_active: true, created_at: '', updated_at: '' },
+      { id: 'svc-2', establishment_id: 'est-1', name: 'Barba', description: null, category: 'barba', duration_minutes: 20, price_cents: 2500, is_active: true, created_at: '', updated_at: '' },
+      { id: 'svc-3', establishment_id: 'est-1', name: 'Hidratação', description: null, category: 'cabelo', duration_minutes: 40, price_cents: 5000, is_active: false, created_at: '', updated_at: '' },
+    ])
+
+    renderTeam(baseValue())
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profissionais' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Gerenciar serviços' }))
+
+    const dialog = await screen.findByRole('dialog')
+
+    // Serviço já associado: remover.
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Remover Corte Masculino/i }))
+
+    await waitFor(() => {
+      expect(professionalMock.removeProfessionalService).toHaveBeenCalledWith('pro-1', 'svc-1')
+    })
+
+    // Serviço não associado: associar.
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Associar Barba/i }))
+
+    await waitFor(() => {
+      expect(professionalMock.addProfessionalService).toHaveBeenCalledWith('pro-1', 'svc-2')
+    })
+
+    // Serviço INATIVO e não associado: a caixa é desabilitada (sem nova associação).
+    expect(within(dialog).getByRole('checkbox', { name: /Associar Hidratação/i })).toBeDisabled()
   })
 
   it('desativa um vínculo após confirmação', async () => {
@@ -296,6 +457,27 @@ describe('TeamPage', () => {
 
     expect(screen.queryByRole('button', { name: 'Convidar funcionário' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Cargo e permissões/i })).not.toBeInTheDocument()
-    expect(screen.getByText(/Apenas o proprietário administra/i)).toBeInTheDocument()
+    expect(screen.getByText(/exclusivos do proprietário/i)).toBeInTheDocument()
+  })
+
+  it('profissionais não habilitam nem associam (visualização somente leitura)', async () => {
+    professionalMock.listEstablishmentProfessionals.mockResolvedValue([
+      professionalFixture(),
+    ])
+
+    renderTeam(
+      baseValue({
+        currentEstablishment: establishmentFixture({ role: 'manager' }),
+        establishments: [establishmentFixture({ role: 'manager' })],
+      }),
+    )
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profissionais' }))
+
+    await screen.findByText('Ana Souza')
+
+    expect(screen.queryByLabelText('Habilitar profissional')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Gerenciar serviços' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pausar atendimentos' })).not.toBeInTheDocument()
   })
 })

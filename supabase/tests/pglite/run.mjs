@@ -142,6 +142,116 @@ async function main() {
     return 1
   }
 
+  console.log('\nRecuperação idempotente de perfil ausente')
+  const recoverySql = readFileSync(join(supabaseDir, 'tests', 'repair_missing_profiles.sql'), 'utf8')
+  try {
+    await db.exec(`
+      INSERT INTO auth.users (id, email, raw_user_meta_data, role)
+      VALUES (
+        'abababab-abab-4bab-8bab-abababababab',
+        'profile-recovery@agenda.flow.test',
+        '{"full_name":"Profile Recovery"}',
+        'authenticated'
+      )
+      ON CONFLICT (id) DO NOTHING;
+      DELETE FROM public.profiles
+      WHERE id = 'abababab-abab-4bab-8bab-abababababab';
+    `)
+    await db.exec(recoverySql)
+    await db.exec(recoverySql)
+
+    const recovered = await db.query(`
+      SELECT id, full_name
+      FROM public.profiles
+      WHERE id = 'abababab-abab-4bab-8bab-abababababab'
+    `)
+    if (recovered.rows.length !== 1 || recovered.rows[0].full_name !== 'Profile Recovery') {
+      report('fail', 'recuperação não preservou o ID ou os metadados do perfil')
+      return 1
+    }
+    report('ok', 'perfil ausente recuperado e procedimento reaplicado sem duplicação')
+  } catch (error) {
+    report('fail', `recuperação de perfil: ${error.message}`)
+    console.log(lineContext(recoverySql, error.position))
+    return 1
+  }
+
+  console.log('\nReaplicação da migration 00010 (proteção de exclusão)')
+  const deletionSafetyMigration = migrationFiles.find((file) => file.startsWith('20250127000010'))
+  if (!deletionSafetyMigration) {
+    report('fail', 'migration 20250127000010_profile_deletion_safety.sql não encontrada')
+    return 1
+  }
+
+  const deletionSafetySql = neutralizePgcryptoExtension(
+    readFileSync(join(migrationsDir, deletionSafetyMigration), 'utf8'),
+  )
+  try {
+    await db.exec(deletionSafetySql)
+    const deletionRules = await db.query(`
+      SELECT c.conname, c.confdeltype
+      FROM pg_constraint c
+      WHERE c.conname IN (
+        'establishments_owner_id_fkey',
+        'establishment_members_user_id_fkey',
+        'establishment_invitations_invited_by_fkey'
+      )
+    `)
+    if (deletionRules.rows.length !== 3 || deletionRules.rows.some((row) => row.confdeltype !== 'r')) {
+      report('fail', 'reaplicação da 00010 não preservou as três FKs como RESTRICT')
+      return 1
+    }
+    report('ok', 'migration 00010 reaplicada e as três FKs permanecem como RESTRICT')
+  } catch (error) {
+    report('fail', `reaplicação da 00010: ${error.message}`)
+    console.log(lineContext(deletionSafetySql, error.position))
+    return 1
+  }
+
+  console.log('\nReaplicação da migration 00009 (idempotência e preservação de dados)')
+  const professionalsMigration = migrationFiles.find((file) => file.startsWith('20250127000009'))
+  const beforeReapply = await db.query(`
+    SELECT
+      (SELECT coalesce(jsonb_agg(to_jsonb(ep) ORDER BY ep.id), '[]'::jsonb)
+       FROM public.establishment_professionals ep) AS professionals,
+      (SELECT coalesce(jsonb_agg(to_jsonb(eps) ORDER BY eps.id), '[]'::jsonb)
+       FROM public.establishment_professional_services eps) AS professional_services
+  `)
+
+  if (!professionalsMigration) {
+    report('fail', 'migration 20250127000009_professionals.sql não encontrada')
+    return 1
+  }
+
+  const reapplySql = neutralizePgcryptoExtension(
+    readFileSync(join(migrationsDir, professionalsMigration), 'utf8'),
+  )
+
+  try {
+    await db.exec(reapplySql)
+    const afterReapply = await db.query(`
+      SELECT
+        (SELECT coalesce(jsonb_agg(to_jsonb(ep) ORDER BY ep.id), '[]'::jsonb)
+         FROM public.establishment_professionals ep) AS professionals,
+        (SELECT coalesce(jsonb_agg(to_jsonb(eps) ORDER BY eps.id), '[]'::jsonb)
+         FROM public.establishment_professional_services eps) AS professional_services
+    `)
+    const before = beforeReapply.rows[0]
+    const after = afterReapply.rows[0]
+
+    if (JSON.stringify(before.professionals) !== JSON.stringify(after.professionals) ||
+        JSON.stringify(before.professional_services) !== JSON.stringify(after.professional_services)) {
+      report('fail', 'reaplicação da 00009 alterou a quantidade de dados')
+      return 1
+    }
+
+    report('ok', 'migration 00009 reaplicada sem falhas e sem perda de dados')
+  } catch (error) {
+    report('fail', `reaplicação da 00009: ${error.message}`)
+    console.log(lineContext(reapplySql, error.position))
+    return 1
+  }
+
   console.log('\nAuditoria do banco (supabase/tests/verify_remote.sql)')
   const verifySql = readFileSync(join(supabaseDir, 'tests', 'verify_remote.sql'), 'utf8')
 

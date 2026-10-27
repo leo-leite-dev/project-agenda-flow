@@ -192,6 +192,89 @@ export interface Database {
           },
         ]
       }
+      establishment_professionals: {
+        Row: {
+          id: string
+          establishment_id: string
+          member_id: string
+          accepts_appointments: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          member_id: string
+          accepts_appointments?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          member_id?: string
+          accepts_appointments?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'establishment_professionals_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'establishment_professionals_member_establishment_fkey'
+            columns: ['member_id', 'establishment_id']
+            referencedRelation: 'establishment_members'
+            referencedColumns: ['id', 'establishment_id']
+          },
+        ]
+      }
+      establishment_professional_services: {
+        Row: {
+          id: string
+          establishment_id: string
+          professional_id: string
+          service_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          professional_id: string
+          service_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          professional_id?: string
+          service_id?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'establishment_professional_services_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'establishment_professional_services_professional_establishment_fkey'
+            columns: ['professional_id', 'establishment_id']
+            referencedRelation: 'establishment_professionals'
+            referencedColumns: ['id', 'establishment_id']
+          },
+          {
+            foreignKeyName: 'establishment_professional_services_service_establishment_fkey'
+            columns: ['service_id', 'establishment_id']
+            referencedRelation: 'establishment_services'
+            referencedColumns: ['id', 'establishment_id']
+          },
+        ]
+      }
       member_permissions: {
         Row: {
           id: string
@@ -348,6 +431,27 @@ export interface Database {
         Args: {
           p_service_id: string
           p_is_active: boolean
+        }
+        Returns: null
+      }
+      set_establishment_professional: {
+        Args: {
+          p_member_id: string
+          p_accepts_appointments: boolean
+        }
+        Returns: null
+      }
+      add_establishment_professional_service: {
+        Args: {
+          p_professional_id: string
+          p_service_id: string
+        }
+        Returns: null
+      }
+      remove_establishment_professional_service: {
+        Args: {
+          p_professional_id: string
+          p_service_id: string
         }
         Returns: null
       }

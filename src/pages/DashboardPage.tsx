@@ -17,6 +17,8 @@ import {
   SparkIcon,
 } from '../components/dashboard/icons'
 import { listServices } from '../lib/services'
+import { listEstablishmentProfessionals } from '../lib/professionals'
+import { teamRoleLabel } from '../lib/team'
 
 const ESTABLISHMENT_TYPE_LABEL = {
   barbershop: 'Barbearia',
@@ -31,11 +33,15 @@ interface SetupTask {
   /** Rota do módulo correspondente. */
   modulePath: string
   moduleLabel: string
+  /** Rótulo da ação pendente (quando a regra de conclusão existe). */
+  pendingActionLabel?: string
   /**
    * Regra de conclusão. `servicesActive` é satisfeita quando o estabelecimento
    * possui pelo menos um serviço ATIVO cadastrado (dados reais do Supabase).
+   * `professionalsEnabled` é satisfeita quando existe pelo menos um membro
+   * habilitado como profissional de atendimento (dados reais do Supabase).
    */
-  completionRule?: 'servicesActive'
+  completionRule?: 'servicesActive' | 'professionalsEnabled'
 }
 
 const SETUP_TASKS: SetupTask[] = [
@@ -53,6 +59,7 @@ const SETUP_TASKS: SetupTask[] = [
     modulePath: '/dashboard/servicos',
     moduleLabel: 'Serviços',
     completionRule: 'servicesActive',
+    pendingActionLabel: 'Cadastrar serviços',
   },
   {
     step: 3,
@@ -60,6 +67,8 @@ const SETUP_TASKS: SetupTask[] = [
     description: 'Convide os profissionais e defina o papel de cada um.',
     modulePath: '/dashboard/equipe',
     moduleLabel: 'Equipe',
+    completionRule: 'professionalsEnabled',
+    pendingActionLabel: 'Habilitar profissionais',
   },
   {
     step: 4,
@@ -118,13 +127,20 @@ interface OverviewContentProps {
 }
 
 /**
- * Regra documentada do checklist: a etapa "Cadastrar os serviços" é contabilizada
- * como concluída quando o estabelecimento possui pelo menos um serviço ATIVO.
- * Os dados vêm do Supabase (RLS limita ao estabelecimento ativo); em caso de
- * falha de carregamento, a etapa é exibida como pendente — nada é inventado.
+ * Regras documentadas do checklist (dados reais do Supabase; em caso de
+ * falha de carregamento a etapa é exibida como pendente — nada é inventado):
+ *   • "Cadastrar os serviços": concluída quando existe ao menos um serviço
+ *     ATIVO no estabelecimento;
+ *   • "Adicionar profissionais": concluída quando existe ao menos um membro
+ *     habilitado como profissional de atendimento.
  */
 function OverviewContent({ establishment, user }: OverviewContentProps) {
   const [hasActiveService, setHasActiveService] = useState<boolean | null>(null)
+  const [hasEnabledProfessional, setHasEnabledProfessional] = useState<boolean | null>(null)
+  const [professionalStats, setProfessionalStats] = useState<{
+    enabled: number
+    withoutServices: number
+  } | null>(null)
 
   useEffect(() => {
     let isMounted = true
@@ -137,13 +153,32 @@ function OverviewContent({ establishment, user }: OverviewContentProps) {
         if (isMounted) setHasActiveService(null)
       })
 
+    void listEstablishmentProfessionals(establishment.id)
+      .then((professionals) => {
+        if (isMounted) {
+          setHasEnabledProfessional(professionals.length > 0)
+          setProfessionalStats({
+            enabled: professionals.length,
+            withoutServices: professionals.filter(
+              (professional) => professional.services.length === 0,
+            ).length,
+          })
+        }
+      })
+      .catch(() => {
+        if (isMounted) setHasEnabledProfessional(null)
+      })
+
     return () => {
       isMounted = false
     }
   }, [establishment.id])
 
-  const isTaskCompleted = (task: SetupTask): boolean =>
-    task.completionRule === 'servicesActive' ? hasActiveService === true : false
+  const isTaskCompleted = (task: SetupTask): boolean => {
+    if (task.completionRule === 'servicesActive') return hasActiveService === true
+    if (task.completionRule === 'professionalsEnabled') return hasEnabledProfessional === true
+    return false
+  }
 
   const completedCount = SETUP_TASKS.filter(isTaskCompleted).length
 
@@ -162,12 +197,27 @@ function OverviewContent({ establishment, user }: OverviewContentProps) {
         <h1 className="dash-welcome__title">Bem-vindo ao {establishment.name}</h1>
         <p className="dash-welcome__subtitle">
           {ESTABLISHMENT_TYPE_LABEL[establishment.type]}
-          {locationLabel ? ` • ${locationLabel}` : ''} • Seu papel:{' '}
-          <strong>{establishment.role === 'owner' ? 'Proprietário' : establishment.role}</strong>
+          {locationLabel ? ` • ${locationLabel}` : ''} • Seu papel: <strong>{teamRoleLabel(establishment.role)}</strong>
         </p>
       </section>
 
       <section className="dash-metrics" aria-label="Indicadores do negócio">
+        <article className="dash-card dash-metric" key="professionals">
+          <header className="dash-metric__head">
+            <span className="dash-metric__icon" aria-hidden="true">
+              <ClientsEmptyIcon />
+            </span>
+            <h2 className="dash-metric__title">Profissionais</h2>
+          </header>
+          {professionalStats === null ? (
+            <p className="dash-metric__empty">Carregando...</p>
+          ) : (
+            <p className="dash-metric__value">
+              {professionalStats.enabled} habilitado(s) para atendimentos •{' '}
+              {professionalStats.withoutServices} sem serviços
+            </p>
+          )}
+        </article>
         {FUTURE_METRICS.map((metric) => {
           const Icon = metric.icon
 
@@ -226,7 +276,7 @@ function OverviewContent({ establishment, user }: OverviewContentProps) {
                   ) : (
                     <>
                       <ClockIcon className="dash-task__action-icon" />
-                      {task.moduleLabel} • {task.completionRule === 'servicesActive' ? 'Cadastrar serviços' : 'Em breve'}
+                      {task.moduleLabel} • {task.pendingActionLabel ?? 'Em breve'}
                     </>
                   )}
                 </Link>

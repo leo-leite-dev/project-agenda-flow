@@ -2059,6 +2059,589 @@ END $$;
 RESET ROLE;
 
 --------------------------------------------------------------------------------
+-- 3.2 Gestão de profissionais e associação de serviços (etapa 7)
+--
+-- Conceitos independentes: o CARGO (permissões administrativas) e a
+-- HABILITAÇÃO para receber atendimentos. Qualquer membro ativo pode ser
+-- habilitado; o gerenciamento é exclusivo do proprietário; a integridade
+-- entre estabelecimentos é garantida por FKs compostas.
+--------------------------------------------------------------------------------
+SET LOCAL ROLE authenticated;
+
+-- Contexto: dono do estabelecimento A.
+SELECT set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SELECT set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+DO $$
+DECLARE
+  v_owner_a uuid := '11111111-1111-1111-1111-111111111111';
+  v_prof_a uuid := '22222222-2222-2222-2222-222222222222';
+  v_manager_a uuid := '33333333-3333-3333-3333-333333333333';
+  v_prof_b uuid := '55555555-5555-5555-5555-555555555555';
+  v_shared_user uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  v_est_a uuid;
+  v_est_b uuid;
+  v_member_owner uuid;
+  v_member_prof_a uuid;
+  v_member_manager uuid;
+  v_member_shared uuid;
+  v_service_a uuid;
+  v_service_barba uuid;
+  v_service_sobrancelha uuid;
+  v_service_infantil uuid;
+  v_professional_owner uuid;
+  v_professional_prof_a uuid;
+  v_professional_manager uuid;
+  v_permissions_before integer;
+  v_debug_total integer;
+BEGIN
+  ASSERT current_user = 'authenticated',
+    'The professionals scenarios must run as the authenticated role, not as the table owner';
+
+  SELECT id INTO v_est_a FROM public.establishments WHERE slug = 'barbearia-alpha';
+  -- v_est_b é selecionado sob as claims do DONO DE B (a RLS oculta o
+  -- estabelecimento alheio; sob as claims de A a seleção devolveria NULL
+  -- e as asserções cross-tenant seriam vazias).
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  SELECT id INTO v_est_b FROM public.establishments WHERE slug = 'salao-beta';
+
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  SELECT id INTO v_member_owner FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_owner_a;
+  SELECT id INTO v_member_prof_a FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a;
+  SELECT id INTO v_member_manager FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_manager_a;
+  SELECT id INTO v_member_shared FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_shared_user;
+  SELECT id INTO v_service_a FROM public.establishment_services WHERE establishment_id = v_est_a;
+
+  SELECT count(*) INTO v_permissions_before
+  FROM public.member_permissions mp
+  JOIN public.establishment_members em ON em.id = mp.member_id
+  WHERE em.establishment_id = v_est_a AND em.user_id = v_prof_a;
+
+  --------------------------------------------------------------------------
+  -- Test 55: o proprietário habilita membros com cargos DIFERENTES
+  -- (owner, manager e professional) como profissionais de atendimento.
+  --------------------------------------------------------------------------
+  PERFORM public.set_establishment_professional(v_member_owner, true);
+  PERFORM public.set_establishment_professional(v_member_prof_a, true);
+  PERFORM public.set_establishment_professional(v_member_manager, true);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a
+  ) = 3, 'Three members must be enabled as professionals';
+
+  ASSERT (
+    SELECT ep.accepts_appointments
+    FROM public.establishment_professionals ep
+    JOIN public.establishment_members em ON em.id = ep.member_id
+    WHERE ep.establishment_id = v_est_a AND em.user_id = v_owner_a
+  ) = true, 'The owner member can be enabled as a professional';
+
+  -- A habilitação NÃO altera cargo, permissões nem o vínculo.
+  ASSERT (
+    SELECT em.role FROM public.establishment_members em
+    JOIN public.establishment_professionals ep ON ep.member_id = em.id
+    WHERE ep.establishment_id = v_est_a AND em.user_id = v_prof_a
+  ) = 'professional', 'Enabling a professional must NOT change the member role';
+
+  ASSERT (
+    SELECT count(*) FROM public.member_permissions mp
+    JOIN public.establishment_members em ON em.id = mp.member_id
+    WHERE em.establishment_id = v_est_a AND em.user_id = v_prof_a
+  ) = v_permissions_before, 'Enabling a professional must NOT change administrative permissions';
+
+  ASSERT (
+    SELECT em.is_active FROM public.establishment_members em
+    JOIN public.establishment_professionals ep ON ep.member_id = em.id
+    WHERE ep.establishment_id = v_est_a AND em.user_id = v_prof_a
+  ) = true, 'Enabling a professional must NOT deactivate the membership';
+
+  --------------------------------------------------------------------------
+  -- Test 56: re-habilitação é idempotente (um único registro por membro)
+  -- e a pausa (false) preserva o registro sem desativar o vínculo.
+  --------------------------------------------------------------------------
+  PERFORM public.set_establishment_professional(v_member_prof_a, true);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a AND member_id = v_member_prof_a
+  ) = 1, 'Re-enabling a professional must NOT duplicate the record';
+
+  PERFORM public.set_establishment_professional(v_member_prof_a, false);
+
+  ASSERT (
+    SELECT accepts_appointments FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a AND member_id = v_member_prof_a
+  ) = false, 'Pausing a professional must be persisted';
+
+  ASSERT (
+    SELECT em.is_active FROM public.establishment_members em
+    WHERE em.id = v_member_prof_a
+  ) = true, 'Pausing a professional must NOT deactivate the membership';
+
+  ASSERT (
+    SELECT em.role FROM public.establishment_members em
+    WHERE em.id = v_member_prof_a
+  ) = 'professional', 'Pausing a professional must NOT change the role';
+
+  PERFORM public.set_establishment_professional(v_member_prof_a, true);
+
+  ASSERT (
+    SELECT accepts_appointments FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a AND member_id = v_member_prof_a
+  ) = true, 'Re-enabling after the pause restores acceptance';
+
+  --------------------------------------------------------------------------
+  -- Test 57: apenas o proprietário habilita profissionais — gerente e
+  -- profissional não podem habilitar (nem a si mesmos).
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.set_establishment_professional(v_member_prof_a, true);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT enable professionals';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.set_establishment_professional(v_member_prof_a, true);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Professional should NOT enable itself as a professional';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- O proprietário de OUTRO estabelecimento não habilita membros de A.
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.set_establishment_professional(v_member_prof_a, true);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of B should NOT enable members of A';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Volta ao dono de A.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  --------------------------------------------------------------------------
+  -- Test 58: membro com vínculo DESATIVADO não pode ser habilitado.
+  -- (O vínculo de shared_user em A foi desativado no Test 39 e segue assim.)
+  --------------------------------------------------------------------------
+  BEGIN
+    PERFORM public.set_establishment_professional(v_member_shared, true);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Deactivated link should NOT be enabled as a professional';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  --------------------------------------------------------------------------
+  -- Test 59: associações de serviços — o proprietário associa o MESMO
+  -- serviço a vários profissionais e vários serviços a um profissional.
+  --------------------------------------------------------------------------
+  SELECT ep.id INTO v_professional_prof_a
+  FROM public.establishment_professionals ep
+  WHERE ep.establishment_id = v_est_a AND ep.member_id = v_member_prof_a;
+
+  SELECT ep.id INTO v_professional_owner
+  FROM public.establishment_professionals ep
+  WHERE ep.establishment_id = v_est_a AND ep.member_id = v_member_owner;
+
+  SELECT ep.id INTO v_professional_manager
+  FROM public.establishment_professionals ep
+  WHERE ep.establishment_id = v_est_a AND ep.member_id = v_member_manager;
+
+  -- Segundo serviço de A (ativo), criado pelo próprio dono.
+  v_service_barba := public.create_establishment_service(
+    p_establishment_id => v_est_a,
+    p_name => 'Barba',
+    p_category => 'barba',
+    p_duration_minutes => 20,
+    p_price_cents => 2500,
+    p_is_active => true
+  );
+
+  -- Mesmo serviço para dois profissionais.
+  PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_a);
+  PERFORM public.add_establishment_professional_service(v_professional_manager, v_service_a);
+
+  -- Vários serviços para o mesmo profissional.
+  PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_barba);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE establishment_id = v_est_a
+  ) = 3, 'The associations must be persisted';
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ) = 2, 'A professional may hold multiple services';
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE service_id = v_service_a
+  ) = 2, 'A service may be associated to multiple professionals';
+
+  --------------------------------------------------------------------------
+  -- Test 60: associação DUPLICADA é recusada (nenhuma linha extra).
+  --------------------------------------------------------------------------
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_a);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Duplicated association should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a AND service_id = v_service_a
+  ) = 1, 'A duplicated association must NOT be persisted';
+
+  --------------------------------------------------------------------------
+  -- Test 61: isolamento entre estabelecimentos — tentativa de associar um
+  -- serviço de B a um profissional de A é recusada pela RPC E pela FK
+  -- composta (teste de FK bloqueio direto na seção do papel sonda).
+  --------------------------------------------------------------------------
+  -- Identidade REAL do serviço de B (selecionado sob as claims do dono de
+  -- B; sob as claims de A o catálogo alheio é invisível e o teste seria
+  -- vago — a RPC recusaria um NULL por outro motivo).
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  DECLARE
+    v_service_b uuid;
+  BEGIN
+    SELECT id INTO v_service_b FROM public.establishment_services WHERE establishment_id = v_est_b;
+    ASSERT v_service_b IS NOT NULL, 'Service B must exist and be selectable by its own owner';
+
+    PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+    PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+    BEGIN
+      PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_b);
+      RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Cross-tenant association should be rejected';
+    EXCEPTION WHEN raise_exception THEN
+      -- expected (Servico nao encontrado neste estabelecimento)
+    END;
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE service_id IN (SELECT id FROM public.establishment_services WHERE establishment_id = v_est_b)
+  ) = 0, 'No association may cross establishments';
+
+  -- O dono de B não pode gerenciar os profissionais de A. A adição usa o
+  -- profissional-proprietário com o serviço "Barba" (par ainda INÉDITO) e a
+  -- remoção usa o par (profª, acesso Servico A) que JÁ EXISTE: se a
+  -- autorização falhasse, a contagem total e a contagem do profissional
+  -- mudariam — assertivas abaixo não são vagas.
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_owner, v_service_barba);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of B should NOT manage professionals of A';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.remove_establishment_professional_service(v_professional_prof_a, v_service_a);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of B should NOT remove associations of A';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Volta ao dono de A: as contagens abaixo são lidas sob identity com
+  -- acesso ao estabelecimento (a RLS filtra as linhas de outra pessoa).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  SELECT count(*) INTO v_debug_total FROM public.establishment_professional_services WHERE establishment_id = v_est_a;
+  IF v_debug_total <> 3 THEN
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = format(
+      'Associations must be unchanged after the foreign owner attempts (atual=%s; prof_a=%s; owner_barba=%s; svc_a=%s)',
+      v_debug_total,
+      (SELECT count(*) FROM public.establishment_professional_services WHERE professional_id = v_professional_prof_a),
+      (SELECT count(*) FROM public.establishment_professional_services WHERE professional_id = v_professional_owner AND service_id = v_service_barba),
+      (SELECT count(*) FROM public.establishment_professional_services WHERE service_id = v_service_a));
+  END IF;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ) = 2, 'The foreign owner must not remove existing associations';
+
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  --------------------------------------------------------------------------
+  -- Test 62: nenhum membro que não seja o proprietário associa serviços.
+  -- Um serviço NOVO (par ainda inédito) torna a tentativa discriminante:
+  -- quebra da autorização gravaria a associação e a contagem mudaria.
+  --------------------------------------------------------------------------
+  v_service_sobrancelha := public.create_establishment_service(
+    p_establishment_id => v_est_a,
+    p_name => 'Sombrancelha',
+    p_category => 'estetica',
+    p_duration_minutes => 15,
+    p_price_cents => 1800,
+    p_is_active => true
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_sobrancelha);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT associate services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ) = 2, 'The manager must not add associations';
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_sobrancelha);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Professional should NOT associate services to itself';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ) = 2, 'The professional must not add associations to itself';
+
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  --------------------------------------------------------------------------
+  -- Test 63: serviço INATIVO não recebe NOVA associação; a associação que
+  -- já existia é PRESERVADA (sem exclusão histórica).
+  --------------------------------------------------------------------------
+  PERFORM public.set_establishment_service_active(v_service_barba, false);
+
+  -- A associação preexistente continua lá.
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a AND service_id = v_service_barba
+  ) = 1, 'Deactivating a service must preserve existing associations';
+
+  -- Nova associação com o serviço inativo é recusada.
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_manager, v_service_barba);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Inactive service should NOT receive new associations';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Nenhuma associação com o serviço inativo pode ter sido criada.
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE establishment_id = v_est_a
+  ) = 3, 'An inactive service must NOT receive associations';
+
+  -- Reativar permite novas associações novamente.
+  PERFORM public.set_establishment_service_active(v_service_barba, true);
+  PERFORM public.add_establishment_professional_service(v_professional_manager, v_service_barba);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE establishment_id = v_est_a
+  ) = 4, 'Reactivated service must accept associations again';
+
+  --------------------------------------------------------------------------
+  -- Test 64: remover associação é exclusivo do dono, com feedback correto.
+  --------------------------------------------------------------------------
+  PERFORM public.remove_establishment_professional_service(v_professional_prof_a, v_service_barba);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a AND service_id = v_service_barba
+  ) = 0, 'The association must be removed';
+
+  BEGIN
+    PERFORM public.remove_establishment_professional_service(v_professional_prof_a, v_service_barba);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Removing a missing association should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  --------------------------------------------------------------------------
+  -- Test 65: pausa do profissional preserva cargo, permissões, vínculo e
+  -- as associações de serviços existentes.
+  --------------------------------------------------------------------------
+  PERFORM public.set_establishment_service_active(v_service_barba, false);
+
+  PERFORM public.set_establishment_professional(v_member_prof_a, false);
+
+  ASSERT (
+    SELECT em.is_active FROM public.establishment_members em
+    WHERE em.id = v_member_prof_a
+  ) = true, 'Pausing must NOT deactivate the membership';
+
+  ASSERT (
+    SELECT em.role FROM public.establishment_members em
+    WHERE em.id = v_member_prof_a
+  ) = 'professional', 'Pausing must NOT change the role';
+
+  ASSERT (
+    SELECT count(*) FROM public.member_permissions mp
+    JOIN public.establishment_members em ON em.id = mp.member_id
+    WHERE em.establishment_id = v_est_a AND em.user_id = v_prof_a
+  ) = v_permissions_before, 'Pausing must NOT change administrative permissions';
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ), 'Pausing must preserve the existing service associations';
+
+  --------------------------------------------------------------------------
+  -- Test 66: vínculo DESATIVADO não recebe novas associações nem nova
+  -- habilitação; associações antigas são preservadas (nada é excluído) e o
+  -- estado profissional permanece o anterior às tentativas.
+  --------------------------------------------------------------------------
+  -- Serviço novo e ATIVO (par ainda inédito): se a validação de vínculo
+  -- falhasse, a associação seria gravada e a contagem mudaria.
+  v_service_infantil := public.create_establishment_service(
+    p_establishment_id => v_est_a,
+    p_name => 'Corte Infantil',
+    p_category => 'cabelo',
+    p_duration_minutes => 25,
+    p_price_cents => 2200,
+    p_is_active => true
+  );
+
+  PERFORM public.set_establishment_member_active(v_member_prof_a, false);
+
+  -- Tentativa de re-habilitar o vínculo desativado.
+  BEGIN
+    PERFORM public.set_establishment_professional(v_member_prof_a, true);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Deactivated link should NOT be re-enabled';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- A pausa anterior (Test 65) permanece: a tentativa não alterou o estado.
+  ASSERT (
+    SELECT ep.accepts_appointments FROM public.establishment_professionals ep
+    WHERE ep.id = v_professional_prof_a
+  ) = false, 'A refused attempt must NOT re-enable the paused professional';
+
+  -- Tentativa de nova associação para o vínculo desativado.
+  BEGIN
+    PERFORM public.add_establishment_professional_service(v_professional_prof_a, v_service_infantil);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Deactivated link should NOT receive new services';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- A associação antiga permanece e NENHUMA nova foi criada.
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE professional_id = v_professional_prof_a
+  ) = 1, 'Deactivation must preserve history and refuse new associations';
+
+  -- Reativação do vínculo restaura a elegibilidade (a pausa é revertida).
+  PERFORM public.set_establishment_member_active(v_member_prof_a, true);
+
+  PERFORM public.set_establishment_professional(v_member_prof_a, true);
+
+  --------------------------------------------------------------------------
+  -- Test 67: escrita DIRETA nas tabelas novas é recusada (somente leitura
+  -- para o role da API).
+  --------------------------------------------------------------------------
+  BEGIN
+    INSERT INTO public.establishment_professionals (establishment_id, member_id)
+    VALUES (v_est_a, v_member_shared);
+    RAISE EXCEPTION 'Authenticated role should NOT insert professionals directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected
+  END;
+
+  BEGIN
+    UPDATE public.establishment_professionals SET accepts_appointments = false;
+    RAISE EXCEPTION 'Authenticated role should NOT update professionals directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected
+  END;
+
+  BEGIN
+    DELETE FROM public.establishment_professional_services;
+    RAISE EXCEPTION 'Authenticated role should NOT delete associations directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected
+  END;
+
+  --------------------------------------------------------------------------
+  -- Test 68: RLS — o profissional de A lê os profissionais DELE
+  -- estabelecimento e não os de B.
+  --------------------------------------------------------------------------
+  -- O estabelecimento B também tem um profissional habilitado, para que a
+  -- asserção de isolamento seja de fato discriminante (uma fuga de RLS
+  -- traria a linha de B para a leitura de A).
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  PERFORM public.set_establishment_professional(
+    (SELECT id FROM public.establishment_members
+      WHERE establishment_id = v_est_b AND user_id = v_prof_b),
+    true
+  );
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professionals
+    WHERE establishment_id = v_est_b
+  ) = 1, 'Establishment B must have its own enabled professional';
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a
+  ) = 3, 'The member must read the professionals of the own establishment';
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_professionals
+    WHERE establishment_id = v_est_b
+  ), 'The member must NOT read the professionals of another tenant';
+
+  ASSERT (
+    SELECT count(*) FROM public.establishment_professional_services
+    WHERE establishment_id = v_est_a
+  ) = 3, 'The member must read the associations of the own establishment';
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_professional_services
+    WHERE establishment_id = v_est_b
+  ), 'The member must NOT read the associations of another tenant';
+
+  RAISE NOTICE 'Professional management assertions passed.';
+END $$;
+
+RESET ROLE;
+
+--------------------------------------------------------------------------------
 -- 3.1 Usuário não autenticado (anon) não lê serviços nem executa RPCs
 --------------------------------------------------------------------------------
 SET LOCAL ROLE anon;
@@ -2087,6 +2670,40 @@ BEGIN
     -- expected: EXECUTE não concedido ao anon
   END;
 
+  -- Etapa 7: anon não lê profissionais nem executa as RPCs de profissionais.
+  BEGIN
+    PERFORM 1 FROM public.establishment_professionals;
+    RAISE EXCEPTION 'anon should NOT read professionals';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: recusado pelo PostgreSQL
+  END;
+
+  BEGIN
+    PERFORM 1 FROM public.establishment_professional_services;
+    RAISE EXCEPTION 'anon should NOT read professional services';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: recusado pelo PostgreSQL
+  END;
+
+  BEGIN
+    PERFORM public.set_establishment_professional(
+      '00000000-0000-0000-0000-000000000000'::uuid, true
+    );
+    RAISE EXCEPTION 'anon should NOT execute the professional RPC';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: EXECUTE não concedido ao anon
+  END;
+
+  BEGIN
+    PERFORM public.add_establishment_professional_service(
+      '00000000-0000-0000-0000-000000000000'::uuid,
+      '00000000-0000-0000-0000-000000000000'::uuid
+    );
+    RAISE EXCEPTION 'anon should NOT execute the professional service RPC';
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- expected: EXECUTE não concedido ao anon
+  END;
+
   RAISE NOTICE 'Unauthenticated assertions passed.';
 END $$;
 
@@ -2106,6 +2723,8 @@ BEGIN
   EXECUTE 'GRANT INSERT, UPDATE, DELETE ON public.member_permissions TO agenda_flow_probe';
   EXECUTE 'GRANT UPDATE ON public.profiles TO agenda_flow_probe';
   EXECUTE 'GRANT INSERT, UPDATE, DELETE ON public.establishments TO agenda_flow_probe';
+  EXECUTE 'GRANT INSERT, UPDATE, DELETE ON public.establishment_professionals TO agenda_flow_probe';
+  EXECUTE 'GRANT INSERT, UPDATE, DELETE ON public.establishment_professional_services TO agenda_flow_probe';
 END $$;
 
 SET LOCAL ROLE agenda_flow_probe;
@@ -2202,6 +2821,120 @@ END $$;
 RESET ROLE;
 
 --------------------------------------------------------------------------------
+-- 4.1 Integridade das FKs compostas (etapa 7)
+--
+-- Mesmo como dono das tabelas (ignorando RLS, portanto contornando toda a
+-- aplicação), o banco recusa:
+--   • habilitar um cliente/membro de OUTRO estabelecimento;
+--   • associar um serviço de OUTRO estabelecimento a um profissional.
+-- A integridade entre estabelecimentos não depende apenas dos filtros do
+-- frontend nem das verificações das RPCs.
+--------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_est_a uuid;
+  v_est_b uuid;
+BEGIN
+  SELECT id INTO v_est_a FROM public.establishments WHERE slug = 'barbearia-alpha';
+  SELECT id INTO v_est_b FROM public.establishments WHERE slug = 'salao-beta';
+
+  -- Membro de B habilitado como profissional com establishment_id de A.
+  BEGIN
+    INSERT INTO public.establishment_professionals (establishment_id, member_id)
+    VALUES (
+      v_est_a,
+      (SELECT id FROM public.establishment_members
+        WHERE establishment_id = v_est_b
+        LIMIT 1)
+    );
+    RAISE EXCEPTION 'Composite FK should refuse a member of another tenant';
+  EXCEPTION WHEN foreign_key_violation THEN
+    -- expected: establishment_professionals_member_establishment_fkey
+  END;
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_professionals
+    WHERE establishment_id = v_est_a
+      AND member_id IN (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_b)
+  ), 'No professional may be enabled with a member of another tenant';
+
+  -- Profissional de A associado a um serviço de B (FK composta do serviço).
+  BEGIN
+    INSERT INTO public.establishment_professional_services
+      (establishment_id, professional_id, service_id)
+    VALUES (
+      v_est_a,
+      (SELECT ep.id FROM public.establishment_professionals ep
+        WHERE ep.establishment_id = v_est_a
+        LIMIT 1),
+      (SELECT id FROM public.establishment_services WHERE establishment_id = v_est_b)
+    );
+    RAISE EXCEPTION 'Composite FK should refuse a service of another tenant';
+  EXCEPTION WHEN foreign_key_violation THEN
+    -- expected: establishment_professional_services_service_establishment_fkey
+  END;
+
+  -- Incompatível também na ponta do profissional (FK composta do profissional).
+  BEGIN
+    INSERT INTO public.establishment_professional_services
+      (establishment_id, professional_id, service_id)
+    VALUES (
+      v_est_b,
+      (SELECT ep.id FROM public.establishment_professionals ep
+        WHERE ep.establishment_id = v_est_a
+        LIMIT 1),
+      (SELECT id FROM public.establishment_services WHERE establishment_id = v_est_b)
+    );
+    RAISE EXCEPTION 'Composite FK should refuse a professional of another tenant';
+  EXCEPTION WHEN foreign_key_violation THEN
+    -- expected: establishment_professional_services_professional_establishment_fkey
+  END;
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_professional_services
+    WHERE establishment_id <> (SELECT ep.establishment_id FROM public.establishment_professionals ep WHERE ep.id = professional_id)
+       OR establishment_id <> (SELECT s.establishment_id FROM public.establishment_services s WHERE s.id = service_id)
+  ), 'No association may reference rows of another tenant';
+
+  RAISE NOTICE 'Composite foreign key assertions passed.';
+END $$;
+
+--------------------------------------------------------------------------------
+-- 5. Cleanup of the probe role grants
+--------------------------------------------------------------------------------
+-- 4.1 Profile deletion safety (migration 00010, local preparation only).
+-- A profile deletion must never cascade into an establishment or membership.
+DO $$
+DECLARE
+  v_owner_id uuid := '11111111-1111-1111-1111-111111111111';
+  v_establishment_id uuid;
+  v_member_count integer;
+BEGIN
+  SELECT id INTO v_establishment_id
+  FROM public.establishments
+  WHERE owner_id = v_owner_id
+  LIMIT 1;
+
+  SELECT count(*) INTO v_member_count
+  FROM public.establishment_members
+  WHERE user_id = v_owner_id;
+
+  BEGIN
+    DELETE FROM public.profiles WHERE id = v_owner_id;
+    RAISE EXCEPTION 'Deleting an owner profile must be rejected';
+  EXCEPTION WHEN foreign_key_violation THEN
+    NULL;
+  END;
+
+  ASSERT EXISTS (SELECT 1 FROM public.profiles WHERE id = v_owner_id),
+    'Owner profile must remain after rejected deletion';
+  ASSERT EXISTS (SELECT 1 FROM public.establishments WHERE id = v_establishment_id),
+    'Owner establishment must remain after rejected profile deletion';
+  ASSERT (SELECT count(*) FROM public.establishment_members WHERE user_id = v_owner_id) = v_member_count,
+    'Owner memberships must remain after rejected profile deletion';
+END $$;
+
+--------------------------------------------------------------------------------
 -- 5. Cleanup of the probe role grants
 --------------------------------------------------------------------------------
 DO $$
@@ -2210,6 +2943,8 @@ BEGIN
   EXECUTE 'REVOKE INSERT, UPDATE, DELETE ON public.member_permissions FROM agenda_flow_probe';
   EXECUTE 'REVOKE UPDATE ON public.profiles FROM agenda_flow_probe';
   EXECUTE 'REVOKE INSERT, UPDATE, DELETE ON public.establishments FROM agenda_flow_probe';
+  EXECUTE 'REVOKE INSERT, UPDATE, DELETE ON public.establishment_professionals FROM agenda_flow_probe';
+  EXECUTE 'REVOKE INSERT, UPDATE, DELETE ON public.establishment_professional_services FROM agenda_flow_probe';
   EXECUTE 'REVOKE authenticated FROM agenda_flow_probe';
 END $$;
 
