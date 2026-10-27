@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthProvider'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AuthCallbackPage } from './pages/AuthCallbackPage'
+import { AcceptInvitationPage } from './pages/AcceptInvitationPage'
 import { CreateEstablishmentPage } from './pages/CreateEstablishmentPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DashboardModulePage } from './pages/DashboardModulePage'
@@ -10,6 +11,7 @@ import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { SelectEstablishmentPage } from './pages/SelectEstablishmentPage'
 import { ServicesPage } from './pages/ServicesPage'
+import { TeamPage } from './pages/TeamPage'
 import { WelcomePage } from './pages/WelcomePage'
 
 import './App.css'
@@ -22,6 +24,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          <Route path="/convite/:token" element={<AcceptInvitationPage />} />
           <Route
             path="/welcome"
             element={
@@ -59,6 +62,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <ServicesPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/dashboard/equipe"
+            element={
+              <ProtectedRoute>
+                <TeamPage />
               </ProtectedRoute>
             }
           />

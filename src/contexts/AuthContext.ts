@@ -14,7 +14,7 @@ export interface AuthContextValue {
   establishments: UserEstablishment[]
   currentEstablishment: UserEstablishment | null
   isLoadingEstablishments: boolean
-  signInWithGoogle: () => Promise<void>
+  signInWithGoogle: (nextPath?: string | null) => Promise<void>
   signInWithEmail: (email: string, password: string) => Promise<void>
   signUpWithEmail: (email: string, password: string, fullName: string) => Promise<AuthResponse['data']>
   signOut: () => Promise<void>

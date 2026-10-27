@@ -53,3 +53,37 @@ describe('resolvePostAuthRedirect', () => {
     ).toEqual({ kind: 'redirect', path: '/select-establishment' })
   })
 })
+describe('resolvePostAuthRedirect com caminho de retorno (convite)', () => {
+  it('redireciona para o caminho interno informado', () => {
+    const result = resolvePostAuthRedirect({
+      isAuthenticated: true,
+      establishmentCount: 0,
+      isLoadingEstablishments: false,
+      nextPath: '/convite/abc123',
+    })
+
+    expect(result).toEqual({ kind: 'redirect', path: '/convite/abc123' })
+  })
+
+  it('ignora caminhos externos (proteção contra open redirect)', () => {
+    const result = resolvePostAuthRedirect({
+      isAuthenticated: true,
+      establishmentCount: 1,
+      isLoadingEstablishments: false,
+      nextPath: 'https://evil.example.com',
+    })
+
+    expect(result).toEqual({ kind: 'redirect', path: '/dashboard' })
+  })
+
+  it('mantém o fluxo padrão quando não há caminho de retorno', () => {
+    const result = resolvePostAuthRedirect({
+      isAuthenticated: true,
+      establishmentCount: 2,
+      isLoadingEstablishments: false,
+      nextPath: null,
+    })
+
+    expect(result).toEqual({ kind: 'redirect', path: '/select-establishment' })
+  })
+})

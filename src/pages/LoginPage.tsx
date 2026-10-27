@@ -1,11 +1,21 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { useAuth } from '../hooks/useAuth'
+import { isSafeInternalPath } from '../lib/authRedirect'
+import { storePendingInvitationPath } from '../lib/onboarding'
 
 export function LoginPage() {
   const [searchParams] = useSearchParams()
   const initialMode = searchParams.get('mode') === 'signup' ? 'signup' : 'login'
+  const nextPath = searchParams.get('next')
+  const redirectAfterLogin = isSafeInternalPath(nextPath) && nextPath ? nextPath : '/dashboard'
+
+  // O contexto do convite sobrevive ao cadastro (inclusive com confirmação de
+  // e-mail) e ao login: o caminho fica guardado para o onboarding.
+  useEffect(() => {
+    storePendingInvitationPath(nextPath)
+  }, [nextPath])
 
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode)
   const [email, setEmail] = useState('')
@@ -31,7 +41,7 @@ export function LoginPage() {
     setLocalError(null)
     clearError()
     try {
-      await signInWithGoogle()
+      await signInWithGoogle(nextPath)
     } catch {
       // Error is already handled by the auth context.
     }
@@ -47,7 +57,7 @@ export function LoginPage() {
     try {
       if (mode === 'login') {
         await signInWithEmail(email, password)
-        navigate('/dashboard', { replace: true })
+        navigate(redirectAfterLogin, { replace: true })
       } else {
         if (!fullName.trim()) {
           setLocalError('Informe seu nome completo.')
@@ -56,7 +66,7 @@ export function LoginPage() {
         }
         const { session } = await signUpWithEmail(email, password, fullName)
         if (session) {
-          navigate('/dashboard', { replace: true })
+          navigate(redirectAfterLogin, { replace: true })
         } else {
           setSuccessMessage('Conta criada. Verifique seu e-mail para confirmar o cadastro antes de entrar.')
         }

@@ -491,7 +491,14 @@ BEGIN
       'ensure_profile',
       'create_establishment_invitation',
       'accept_establishment_invitation',
-      'cancel_establishment_invitation'
+      'cancel_establishment_invitation',
+      'create_establishment_service',
+      'update_establishment_service',
+      'set_establishment_service_active',
+      'update_establishment_member_role',
+      'set_establishment_member_active',
+      'set_establishment_member_permissions',
+      'get_my_pending_invitations'
     )
     AND (
       has_function_privilege('anon', p.oid, 'EXECUTE')

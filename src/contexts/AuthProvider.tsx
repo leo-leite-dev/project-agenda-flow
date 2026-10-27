@@ -116,11 +116,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [loadUserData])
 
-  const handleSignInWithGoogle = useCallback(async () => {
+  const handleSignInWithGoogle = useCallback(async (nextPath?: string | null) => {
     setError(null)
     setIsLoading(true)
     try {
-      await signInWithGoogle()
+      await signInWithGoogle(nextPath)
     } catch (err) {
       setIsLoading(false)
       setError(err instanceof Error ? err.message : 'Falha ao iniciar login com Google.')

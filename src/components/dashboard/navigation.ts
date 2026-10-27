@@ -54,7 +54,7 @@ export const dashboardNav: DashboardNavItem[] = [
     path: '/dashboard/equipe',
     label: 'Equipe',
     icon: TeamIcon,
-    implemented: false,
+    implemented: true,
     description:
       'Profissionais do estabelecimento, papéis e permissões de acesso.',
   },

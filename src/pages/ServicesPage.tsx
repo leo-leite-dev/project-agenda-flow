@@ -28,6 +28,11 @@ export function ServicesPage() {
 
   const establishment = currentEstablishment ?? establishments[0]
 
+  // Somente o proprietário administra o catálogo. A garantia real está no
+  // banco (as RPCs recusam não-proprietários), mas a interface não deve
+  // expor controles administrativos a quem não pode usá-los.
+  const isOwner = establishment?.role === 'owner'
+
   const [services, setServices] = useState<EstablishmentService[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -229,9 +234,11 @@ export function ServicesPage() {
           </div>
         </div>
 
-        <button type="button" className="button button--primary" onClick={handleOpenCreate}>
-          Novo serviço
-        </button>
+        {isOwner && (
+          <button type="button" className="button button--primary" onClick={handleOpenCreate}>
+            Novo serviço
+          </button>
+        )}
       </section>
 
       <section className="dash-card" aria-label="Lista de serviços">
@@ -268,9 +275,11 @@ export function ServicesPage() {
               Nenhum serviço cadastrado ainda. Cadastre o primeiro serviço para preparar a agenda
               de atendimentos.
             </p>
-            <button type="button" className="button button--primary" onClick={handleOpenCreate}>
-              Cadastrar o primeiro serviço
-            </button>
+            {isOwner && (
+              <button type="button" className="button button--primary" onClick={handleOpenCreate}>
+                Cadastrar o primeiro serviço
+              </button>
+            )}
           </div>
         ) : filteredServices.length === 0 ? (
           <div className="dash-list-state">
@@ -316,25 +325,29 @@ export function ServicesPage() {
                   <span className="service-item__price">{formatBRL(service.price_cents)}</span>
 
                   <div className="service-item__actions">
-                    <button
-                      type="button"
-                      className="button button--secondary service-item__action"
-                      onClick={() => handleOpenEdit(service)}
-                    >
-                      Editar
-                    </button>
-                    <button
-                      type="button"
-                      className={`button ${
-                        service.is_active ? 'button--secondary' : 'button--primary'
-                      } service-item__action`}
-                      onClick={() => {
-                        setPageError(null)
-                        setConfirmTarget(service)
-                      }}
-                    >
-                      {service.is_active ? 'Desativar' : 'Ativar'}
-                    </button>
+                    {isOwner && (
+                      <>
+                        <button
+                          type="button"
+                          className="button button--secondary service-item__action"
+                          onClick={() => handleOpenEdit(service)}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          className={`button ${
+                            service.is_active ? 'button--secondary' : 'button--primary'
+                          } service-item__action`}
+                          onClick={() => {
+                            setPageError(null)
+                            setConfirmTarget(service)
+                          }}
+                        >
+                          {service.is_active ? 'Desativar' : 'Ativar'}
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </li>

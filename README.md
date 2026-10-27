@@ -40,6 +40,7 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Identificação do estabelecimento ativo | Cabeçalho e visão geral exibem o nome, tipo e papel do estabelecimento ativo, sempre a partir dos dados reais da sessão. |
 | Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
 | Gestão de serviços (Etapa 5) | Catálogo por estabelecimento: cadastro em modal, edição, ativação/desativação lógica com confirmação, busca por nome, filtros por categoria e status, preços em centavos formatados em R$. Escritas por RPCs que validam autenticação e papel de proprietário no banco. |
+| Gestão de equipe e convites (Etapa 6) | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. |
 | Navegação responsiva | Layout adaptativo: sidebar fixa no desktop e drawer com backdrop em tablets e smartphones. |
 | Logout | Encerramento de sessão pelo menu do perfil do dashboard. |
 | Roteamento protegido | Rotas públicas e protegidas com React Router e `ProtectedRoute`. |
@@ -66,11 +67,24 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 - Para testar localmente: configure as variáveis do Supabase, execute `npm install` e `npm run dev`, autentique-se e selecione um estabelecimento. `npm run test:db` usa um banco isolado em memória; ele não popula o Supabase configurado na interface.
 - Os testes de interface usam mocks; os testes SQL usam PGlite com Auth e funções criptográficas auxiliares de teste. A consulta ao histórico remoto confirma aplicação, **não substitui testes funcionais autenticados no Supabase nem valida o pgcrypto de produção**.
 
+### Gestão de equipe, convites e permissões — uso e regras
+
+- Acesse **Equipe** na sidebar. O proprietário vê e administra a equipe; demais cargos apenas visualizam.
+- **Cargos** (valores reais do schema): `owner` (Proprietário), `manager` (Gerente), `professional` (Profissional), `receptionist` (Recepcionista). O cargo `owner` **não** é atribuível por esta etapa — não há transferência de propriedade.
+- **Convites** são vinculados ao **e-mail** do funcionário: a autenticação por telefone não está habilitada no projeto, portanto um convite só por telefone não seria aceito com segurança. O token tem 32 bytes aleatórios, **apenas o hash é gravado** no banco, vale por 7 dias e é de uso único.
+- O Agenda Flow **não envia e-mails**: o link é exibido ao proprietário, que o compartilha manualmente por e-mail (`mailto:`) ou WhatsApp (`wa.me`). Como o token bruto não pode ser recuperado do hash, um novo link é gerado cancelando o convite anterior.
+- **Aceite**: o convidado abre `/convite/<token>`, entra ou cria a conta (o link é preservado pelo fluxo de login, inclusive no OAuth do Google) e confirma. O banco valida a identidade do e-mail, a expiração e o uso único; o aceite concorrente é serializado com bloqueio de linha.
+- **Vínculos**: o proprietário altera cargo e permissões, desativa e reativa. A desativação é lógica — a conta global e os vínculos com outros estabelecimentos são preservados, e o funcionário desativado perde o acesso aos dados do estabelecimento.
+- O proprietário não altera o próprio cargo nem desativa o próprio vínculo, e o estabelecimento sempre conserva um proprietário ativo.
+- **Permissões**: cargo, permissões refinadas (chaves já previstas no schema) e autorização real são coisas distintas — a garantia está nas políticas RLS e nas RPCs, não na interface.
+- **Onboarding**: quem tem convite pendente (para o e-mail confirmado) é levado ao aceite do convite, nunca a criar um estabelecimento. Quem não tem vínculo nem convite pode criar o próprio estabelecimento. O contexto do convite sobrevive ao cadastro, à confirmação de e-mail, ao login e à atualização da página.
+
 ## Roadmap
 
 Funcionalidades planejadas para as próximas etapas (ainda não implementadas):
 
 - **Evolução do catálogo de serviços** — categorias personalizadas e paginação (o cadastro, edição e controle de status já estão implementados).
+- **Gestão de equipe** — invitation por telefone com verificação de telefone, permissões por módulo mais refinadas e auditoria de alterações. *(A gestão de equipe por e-mail está implementada na etapa 6.)*
 - **Gestão de funcionários** — profissionais do estabelecimento e papéis.
 - **Horários de funcionamento** — dias e horários de atendimento.
 - **Agenda de atendimentos** — visualização diária, semanal e mensal.
@@ -448,7 +462,7 @@ git push origin main
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00005 registradas como aplicadas no Supabase remoto**. A finalização desta entrega não reaplicou migrations nem modificou dados remotos.
+As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00005 registradas como aplicadas no Supabase remoto**. As migrations **00006 (gestão de equipe) e 00007 (convites pendentes do onboarding) foram aplicadas em 27/10/2026**.
 
 Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
 
@@ -464,6 +478,7 @@ Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez 
 | 4 | `20250127000003_ensure_user_profiles.sql` | Provisionamento garantido de perfis, backfill idempotente, `ensure_profile()`, autocorreção em `create_establishment`, schema privado para as funções internas, hardening do `search_path` e matriz de `EXECUTE`. |
 | 5 | `20250127000004_grants_and_rls_review.sql` | Privilégio mínimo nas tabelas (somente `SELECT` para `authenticated`), neutralização dos privilégios padrão herdados (`pg_default_acl`), revisão do RLS e verificação explícita de todo o estado de privilégios. |
 | 6 | `20250127000005_establishment_services.sql` | Catálogo de serviços por estabelecimento: tabela com preço em centavos, constraints, índices, RLS e RPCs de escrita exclusivas do proprietário. **Aplicação confirmada pelo histórico remoto.** |
+| 7 | `20250127000006_team_management.sql` | Gestão de equipe: RPCs de cargo, situação de vínculo e permissões (somente proprietário), bloqueio de convites duplicados, aceite de convite serializado com `FOR UPDATE`, isolamento do vínculo desativado e privilégio mínimo nas tabelas administrativas. **Ainda não aplicada no remoto.** |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -561,6 +576,7 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
 - ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
 - ✅ Migrations 00000–00005 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
+- ✅ Etapa 6 (gestão de equipe e convites) aplicada no remoto (migrations 00006 e 00007 em 27/10/2026) e publicada no GitHub/Cloudflare Pages.
 - ✅ Gestão de serviços (Etapa 5): tela funcional, RPCs, migration 00005 e testes automatizados.
 - ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
 - As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` devem estar configuradas no ambiente de produção do Cloudflare Pages; a validação manual autenticada continua necessária após cada publicação.

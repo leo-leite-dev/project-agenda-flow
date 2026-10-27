@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 
 import { useAuth } from '../../hooks/useAuth'
+import { usePendingInvitation } from '../../hooks/usePendingInvitation'
+import { resolveOnboardingDecision } from '../../lib/onboarding'
 import { DashboardHeader } from './DashboardHeader'
 import { DashboardSidebar } from './DashboardSidebar'
 
@@ -11,13 +13,20 @@ interface DashboardLayoutProps {
 
 /**
  * Estrutura compartilhada da área administrativa: sidebar, cabeçalho e área
- * principal. Garante que o estabelecimento ativo esteja definido pelos dados
- * reais da sessão (vínculos autorizados via RLS) antes de renderizar
- * qualquer conteúdo.
+ * principal.
+ *
+ * A decisão de tela inicial considera autenticação, vínculos, convites
+ * pendentes e o estado de carregamento — um funcionário convidado nunca é
+ * obrigado a criar um estabelecimento.
  */
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { user, establishments, currentEstablishment, isLoadingEstablishments, isLoading, signOut } =
     useAuth()
+  const {
+    hasPendingInvitation,
+    pendingInvitationPath,
+    isLoading: isLoadingInvitations,
+  } = usePendingInvitation()
   const [isSidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
 
@@ -26,7 +35,17 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     document.getElementById('dash-main')?.focus()
   }, [location.pathname])
 
-  if (isLoading || isLoadingEstablishments) {
+  const decision = resolveOnboardingDecision({
+    isAuthenticated: Boolean(user),
+    isLoading,
+    isLoadingEstablishments,
+    isLoadingInvitations,
+    establishmentCount: establishments.length,
+    hasPendingInvitation,
+    pendingInvitationPath,
+  })
+
+  if (decision.kind === 'loading') {
     return (
       <main className="auth-page">
         <section className="auth-card">
@@ -37,12 +56,22 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     )
   }
 
-  if (establishments.length === 0) {
-    return <Navigate to="/welcome" replace />
+  if (decision.kind === 'login') {
+    return <Navigate to="/login" replace />
   }
 
-  if (!currentEstablishment && establishments.length > 1) {
+  if (decision.kind === 'select-establishment') {
     return <Navigate to="/select-establishment" replace />
+  }
+
+  if (decision.kind === 'invitation') {
+    return <Navigate to={decision.path} replace />
+  }
+
+  if (decision.kind === 'pending-invitation' || decision.kind === 'welcome') {
+    // Sem vínculos: ou há um convite para aceitar ou o usuário pode criar
+    // o próprio estabelecimento. A página inicial orienta os dois caminhos.
+    return <Navigate to="/welcome" replace />
   }
 
   const establishment = currentEstablishment ?? establishments[0]

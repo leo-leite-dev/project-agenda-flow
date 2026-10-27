@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { useAuth } from '../hooks/useAuth'
 import { resolvePostAuthRedirect } from '../lib/authRedirect'
 
 export function AuthCallbackPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { isAuthenticated, isLoading, isLoadingEstablishments, establishments } = useAuth()
   const didRedirect = useRef(false)
+  const nextPath = searchParams.get('next')
 
   const redirect = useCallback(
     (path: string) => {
@@ -28,8 +30,9 @@ export function AuthCallbackPage() {
         isAuthenticated,
         establishmentCount: establishments.length,
         isLoadingEstablishments,
+        nextPath,
       }),
-    [isAuthenticated, establishments, isLoadingEstablishments],
+    [isAuthenticated, establishments, isLoadingEstablishments, nextPath],
   )
 
   useEffect(() => {

@@ -290,6 +290,36 @@ export interface Database {
     }
     Views: Record<string, never>
     Functions: {
+      get_my_pending_invitations: {
+        Args: Record<string, never>
+        Returns: {
+          establishment_id: string
+          establishment_name: string
+          role: string
+          expires_at: string
+        }[]
+      }
+      update_establishment_member_role: {
+        Args: {
+          p_member_id: string
+          p_role: string
+        }
+        Returns: null
+      }
+      set_establishment_member_active: {
+        Args: {
+          p_member_id: string
+          p_is_active: boolean
+        }
+        Returns: null
+      }
+      set_establishment_member_permissions: {
+        Args: {
+          p_member_id: string
+          p_permission_keys: string[]
+        }
+        Returns: null
+      }
       create_establishment_service: {
         Args: {
           p_establishment_id: string

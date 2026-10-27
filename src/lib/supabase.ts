@@ -62,15 +62,18 @@ export async function getCurrentSession() {
 
 /**
  * Starts the OAuth sign-in flow with Google.
- * The user is redirected to Google's consent screen and then back to the app.
+ * When `nextPath` is a safe internal path (e.g. an invitation link), it is
+ * preserved through the OAuth round trip.
  */
-export async function signInWithGoogle() {
-  const redirectTo = `${window.location.origin}/auth/callback`
+export async function signInWithGoogle(nextPath?: string | null) {
+  const callbackUrl = nextPath
+    ? `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`
+    : `${window.location.origin}/auth/callback`
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo,
+      redirectTo: callbackUrl,
       queryParams: {
         access_type: 'offline',
         prompt: 'select_account',

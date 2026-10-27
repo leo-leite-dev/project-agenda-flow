@@ -71,6 +71,19 @@ BEGIN
   )
   ON CONFLICT (id) DO NOTHING;
 
+  -- Shared user: member of two establishments (tests the isolation of links).
+  INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, role)
+  VALUES (
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    'shared@agenda.flow.test',
+    crypt('password', gen_salt('bf')),
+    now(),
+    '{"provider":"email"}',
+    '{"full_name":"Shared Professional"}',
+    'authenticated'
+  )
+  ON CONFLICT (id) DO NOTHING;
+
   -- Legacy accounts: simulate users created before the profile trigger existed.
   INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, role)
   VALUES
@@ -264,6 +277,30 @@ BEGIN
     'anon must NOT execute create_establishment_service';
   ASSERT NOT has_function_privilege('anon', 'public.set_establishment_service_active(uuid, boolean)', 'EXECUTE'),
     'anon must NOT execute set_establishment_service_active';
+
+  --------------------------------------------------------------------------
+  -- Gestão de equipe (etapa 6): escrita apenas por RPCs do proprietário.
+  --------------------------------------------------------------------------
+  ASSERT has_function_privilege('authenticated', 'public.update_establishment_member_role(uuid, text)', 'EXECUTE'),
+    'authenticated must be able to execute update_establishment_member_role';
+  ASSERT has_function_privilege('authenticated', 'public.set_establishment_member_active(uuid, boolean)', 'EXECUTE'),
+    'authenticated must be able to execute set_establishment_member_active';
+  ASSERT has_function_privilege('authenticated', 'public.set_establishment_member_permissions(uuid, text[])', 'EXECUTE'),
+    'authenticated must be able to execute set_establishment_member_permissions';
+
+  ASSERT NOT has_function_privilege('anon', 'public.update_establishment_member_role(uuid, text)', 'EXECUTE'),
+    'anon must NOT execute update_establishment_member_role';
+  ASSERT NOT has_function_privilege('anon', 'public.set_establishment_member_active(uuid, boolean)', 'EXECUTE'),
+    'anon must NOT execute set_establishment_member_active';
+  ASSERT NOT has_function_privilege('anon', 'public.set_establishment_member_permissions(uuid, text[])', 'EXECUTE'),
+    'anon must NOT execute set_establishment_member_permissions';
+
+  ASSERT NOT has_table_privilege('authenticated', 'public.establishment_members', 'INSERT,UPDATE,DELETE'),
+    'authenticated must NOT have write privileges on public.establishment_members';
+  ASSERT NOT has_table_privilege('authenticated', 'public.member_permissions', 'INSERT,UPDATE,DELETE'),
+    'authenticated must NOT have write privileges on public.member_permissions';
+  ASSERT NOT has_table_privilege('authenticated', 'public.establishment_invitations', 'INSERT,UPDATE,DELETE'),
+    'authenticated must NOT have write privileges on public.establishment_invitations';
 
 
   -- RPCs de negócio: apenas authenticated.
@@ -530,6 +567,15 @@ DECLARE
   v_est_frontend uuid;
   v_service_a uuid;
   v_service_b uuid;
+  v_shared_user uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  v_token_shared text;
+  v_token_shared_b text;
+  v_token_expired text;
+  v_token_cancelled text;
+  v_token_reused text;
+  v_token_identity text;
+  v_token_email text;
+  v_email_user uuid := '77777777-7777-7777-7777-777777777777';
   v_token_manager text;
   v_token_prof text;
   v_token_prof_b text;
@@ -1076,6 +1122,326 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN
     -- expected
   END;
+
+  --------------------------------------------------------------------------
+  -- Team management (etapa 6)
+  --------------------------------------------------------------------------
+  -- Test 30: the owner changes a member's role (manager -> professional).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  PERFORM public.update_establishment_member_role(
+    (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_manager_a),
+    'professional'
+  );
+
+  ASSERT (
+    SELECT role FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_manager_a
+  ) = 'professional', 'Role change must be persisted';
+
+  -- Test 31: the owner restores the role.
+  PERFORM public.update_establishment_member_role(
+    (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_manager_a),
+    'manager'
+  );
+
+  -- Test 32: a manager cannot change roles.
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.update_establishment_member_role(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+      'manager'
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT change roles';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 33: a professional cannot change roles (nor promote itself).
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.update_establishment_member_role(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+      'manager'
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Professional should NOT change roles';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.set_establishment_member_active(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+      false
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Professional should NOT deactivate links';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 34: the owner cannot change their own role nor deactivate themselves
+  -- (the only owner of the establishment keeps the access).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.update_establishment_member_role(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_owner_a),
+      'manager'
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner should NOT change the own role';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.set_establishment_member_active(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_owner_a),
+      false
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner should NOT deactivate the own link';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 35: the owner of A cannot manage members of B.
+  BEGIN
+    PERFORM public.update_establishment_member_role(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_b AND user_id = v_prof_b),
+      'professional'
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of A should NOT manage members of B';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  BEGIN
+    PERFORM public.set_establishment_member_active(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_b AND user_id = v_prof_b),
+      false
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Owner of A should NOT deactivate members of B';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 36: the owner manages granular permissions (and invalid keys are
+  -- refused).
+  PERFORM public.set_establishment_member_permissions(
+    (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+    ARRAY['appointments.read', 'clients.read']
+  );
+
+  ASSERT (
+    SELECT count(*) FROM public.member_permissions mp
+    JOIN public.establishment_members em ON em.id = mp.member_id
+    WHERE em.establishment_id = v_est_a AND em.user_id = v_prof_a
+  ) = 2, 'Owner must be able to grant granular permissions';
+
+  BEGIN
+    PERFORM public.set_establishment_member_permissions(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+      ARRAY['permissions.inventadas']
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invalid permission should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 37: a manager cannot grant permissions.
+  PERFORM set_config('request.jwt.claim.sub', v_manager_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.set_establishment_member_permissions(
+      (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_prof_a),
+      ARRAY['finances.delete']
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Manager should NOT grant permissions';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 38: invitation flow — a user joins establishment A and keeps the
+  -- existing link in another establishment.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_shared := public.create_establishment_invitation(
+    v_est_a,
+    'shared@agenda.flow.test',
+    NULL,
+    'professional',
+    ARRAY['appointments.read'],
+    '7 days'::interval
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_shared_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aud":"authenticated","email":"shared@agenda.flow.test"}', true);
+
+  PERFORM public.accept_establishment_invitation(v_token_shared);
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE establishment_id = v_est_a AND user_id = v_shared_user AND role = 'professional'
+  ), 'Accepted invitation must create the membership';
+
+  -- The same user also belongs to establishment B (created by owner B).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_b::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+
+  v_token_shared_b := public.create_establishment_invitation(
+    v_est_b,
+    'shared@agenda.flow.test',
+    NULL,
+    'professional',
+    ARRAY['clients.read'],
+    '7 days'::interval
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_shared_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aud":"authenticated","email":"shared@agenda.flow.test"}', true);
+
+  PERFORM public.accept_establishment_invitation(v_token_shared_b);
+
+  -- Test 39: deactivating the link in A removes the access to A but keeps B.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  PERFORM public.set_establishment_member_active(
+    (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = v_shared_user),
+    false
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_shared_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aud":"authenticated","email":"shared@agenda.flow.test"}', true);
+
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishments WHERE id = v_est_a
+  ), 'Deactivated member must NOT read the establishment data';
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishments WHERE id = v_est_b
+  ), 'Deactivation in A must NOT remove the link with B';
+
+  ASSERT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE establishment_id = v_est_b AND user_id = v_shared_user
+  ), 'Deactivation in A must NOT remove the membership in B';
+
+  -- Test 40: expired, cancelled and already used invitations are refused.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_expired := public.create_establishment_invitation(
+    v_est_a, 'expirado@agenda.flow.test', NULL, 'professional', '{}', '0 seconds'::interval
+  );
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_expired);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Expired invitation should NOT be accepted';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  v_token_cancelled := public.create_establishment_invitation(
+    v_est_a, 'cancelado@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+  );
+
+  PERFORM public.cancel_establishment_invitation(
+    (SELECT id FROM public.establishment_invitations
+     WHERE establishment_id = v_est_a AND email = 'cancelado@agenda.flow.test')
+  );
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_cancelled);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Cancelled invitation should NOT be accepted';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  v_token_reused := public.create_establishment_invitation(
+    v_est_a, 'legacy-user@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_legacy_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"88888888-8888-8888-8888-888888888888","role":"authenticated","aud":"authenticated","email":"legacy-user@agenda.flow.test"}', true);
+
+  PERFORM public.accept_establishment_invitation(v_token_reused);
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_reused);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Used invitation should NOT be accepted twice';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 41: an invitation of A cannot be accepted by a different identity.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_identity := public.create_establishment_invitation(
+    v_est_a, 'prof-a@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_b::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"55555555-5555-5555-5555-555555555555","role":"authenticated","aud":"authenticated","email":"prof-b@agenda.flow.test"}', true);
+
+  BEGIN
+    PERFORM public.accept_establishment_invitation(v_token_identity);
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Invitation should NOT be accepted by another identity';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 42: duplicated pending invitation for the same contact is refused.
+  BEGIN
+    PERFORM public.create_establishment_invitation(
+      v_est_a, 'prof-a@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+    );
+    RAISE EXCEPTION USING ERRCODE = 'P0004', MESSAGE = 'Duplicated pending invitation should be rejected';
+  EXCEPTION WHEN raise_exception THEN
+    -- expected
+  END;
+
+  -- Test 43: an invitation of A grants access only to A.
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_members
+    WHERE establishment_id = v_est_b AND user_id = v_legacy_user
+  ), 'Invitation of A must NOT create a link with B';
+
+  --------------------------------------------------------------------------
+  -- Test 44: convites pendentes por identidade autenticada (onboarding).
+  --------------------------------------------------------------------------
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+
+  v_token_email := public.create_establishment_invitation(
+    v_est_a, 'email-user@agenda.flow.test', NULL, 'professional', '{}', '7 days'::interval
+  );
+
+  -- O convidado (sem vínculo) enxerga o próprio convite pendente.
+  PERFORM set_config('request.jwt.claim.sub', v_email_user::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"77777777-7777-7777-7777-777777777777","role":"authenticated","email":"email-user@agenda.flow.test"}', true);
+
+  ASSERT (SELECT count(*) FROM public.get_my_pending_invitations()) = 1,
+    'The RPC must list the pending invitation addressed to the caller';
+
+  ASSERT (
+    SELECT establishment_name FROM public.get_my_pending_invitations() LIMIT 1
+  ) IS NOT NULL, 'The RPC must expose the establishment name of the invitation';
+
+  -- Nenhum convite de outra identidade é exposto.
+  PERFORM set_config('request.jwt.claim.sub', v_prof_b::text, true);
+  PERFORM set_config('request.jwt.claims', '{"sub":"55555555-5555-5555-5555-555555555555","role":"authenticated","email":"prof-b@agenda.flow.test"}', true);
+
+  ASSERT (SELECT count(*) FROM public.get_my_pending_invitations()) = 0,
+    'The RPC must NOT expose invitations addressed to other identities';
 
   RAISE NOTICE 'All application assertions passed.';
 END $$;
