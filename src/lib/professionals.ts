@@ -62,7 +62,7 @@ export async function listEstablishmentProfessionals(
   const { data, error } = await supabase
     .from('establishment_professionals')
     .select(
-      'id, member_id, accepts_appointments, created_at, member:member_id(id, user_id, role, is_active, profiles:user_id(id, full_name, avatar_url)), services:establishment_professional_services(id, establishment_services(id, name, category, is_active))',
+      'id, member_id, accepts_appointments, created_at, member:establishment_members!establishment_professionals_member_establishment_fkey(id, user_id, role, is_active, profiles:user_id(id, full_name, avatar_url)), services:establishment_professional_services!establishment_professional_services_professional_establishment_fkey(id, establishment_services:establishment_professional_services_service_establishment_fkey(id, name, category, is_active))',
     )
     .eq('establishment_id', establishmentId)
     .order('created_at', { ascending: true })
