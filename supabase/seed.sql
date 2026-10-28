@@ -2935,6 +2935,510 @@ BEGIN
 END $$;
 
 --------------------------------------------------------------------------------
+-- 4.2 Escalas, presença e exceções (etapa 8)
+--------------------------------------------------------------------------------
+-- Proprietário define escalas (inclusive a própria e turnos noturnos);
+-- não-proprietário é recusado; RPCs de check-in/out usam a identidade
+-- autenticada e o horário do servidor; duplicidade diária e correções
+-- auditadas. Fuso por estabelecimento; isolamento multi-tenant.
+DO $$
+DECLARE
+  v_owner_a uuid := '11111111-1111-1111-1111-111111111111';
+  v_prof_a  uuid := '22222222-2222-2222-2222-222222222222';
+  v_prof_b  uuid := '55555555-5555-5555-5555-555555555555';
+  v_est_a uuid;
+  v_est_b uuid;
+  v_member_owner uuid;
+  v_member_prof uuid;
+  v_clock jsonb;
+  v_record_id uuid;
+  v_corrections integer;
+BEGIN
+  SELECT id INTO v_est_a FROM public.establishments WHERE slug = 'barbearia-alpha';
+  SELECT id INTO v_est_b FROM public.establishments WHERE slug = 'salao-beta';
+
+  SELECT id INTO v_member_owner FROM public.establishment_members
+  WHERE establishment_id = v_est_a AND user_id = v_owner_a;
+  SELECT id INTO v_member_prof FROM public.establishment_members
+  WHERE establishment_id = v_est_a AND user_id = v_prof_a;
+
+  -- (1) Proprietário define a escala do profissional da própria empresa.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  PERFORM public.set_establishment_schedule(v_member_prof, '[
+    {"weekday":0,"is_day_off":true},
+    {"weekday":1,"start_time":"09:00","end_time":"18:00","break_start":"12:00","break_end":"13:00"},
+    {"weekday":2,"start_time":"09:00","end_time":"18:00","break_start":"12:00","break_end":"13:00"},
+    {"weekday":3,"start_time":"09:00","end_time":"18:00","break_start":"12:00","break_end":"13:00"},
+    {"weekday":4,"start_time":"09:00","end_time":"18:00","break_start":"12:00","break_end":"13:00"},
+    {"weekday":5,"start_time":"09:00","end_time":"18:00","break_start":"12:00","break_end":"13:00"},
+    {"weekday":6,"start_time":"22:00","end_time":"02:00"}
+  ]'::jsonb);
+  ASSERT (SELECT count(*) FROM public.establishment_schedules WHERE member_id = v_member_prof) = 7,
+    'Professional weekly schedule must have seven day rows';
+  ASSERT (SELECT is_day_off FROM public.establishment_schedules WHERE member_id = v_member_prof AND weekday = 0),
+    'Sunday must be a day off';
+  ASSERT (SELECT start_time FROM public.establishment_schedules WHERE member_id = v_member_prof AND weekday = 6)
+           = '22:00:00'::time,
+    'Overnight shift (22:00 -> 02:00) must be accepted';
+
+  -- (1a) Proprietário define a própria escala (owner também tem controle de presença).
+  PERFORM public.set_establishment_schedule(v_member_owner,
+    '[{"weekday":1,"start_time":"08:00","end_time":"17:00"},{"weekday":2,"start_time":"08:00","end_time":"17:00"}]'::jsonb);
+  ASSERT (SELECT count(*) FROM public.establishment_schedules WHERE member_id = v_member_owner) = 2,
+    'Own schedule must replace the previous rows entirely';
+
+  -- (2) Gerente/profissional NÃO configura escalas (somente proprietário).
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.set_establishment_schedule(v_member_prof, '[{"weekday":1,"start_time":"01:00","end_time":"02:00"}]'::jsonb);
+    RAISE EXCEPTION 'Non-owner must not configure schedules';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Apenas o proprietario configura escalas%' THEN
+      RAISE EXCEPTION 'Unexpected error while a non-owner set a schedule: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (3) Proprietário de OUTRA empresa não configura escala do membro alheio.
+  PERFORM set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444'::uuid::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"44444444-4444-4444-4444-444444444444","role":"authenticated","aud":"authenticated","email":"owner-b@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.set_establishment_schedule(v_member_prof, '[{"weekday":1,"start_time":"01:00","end_time":"02:00"}]'::jsonb);
+    RAISE EXCEPTION 'Foreign owner must not configure schedules of another tenant';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Apenas o proprietario configura escalas%' THEN
+      RAISE EXCEPTION 'Unexpected error for foreign owner: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (4) Membro desativado não recebe escala; escalas existentes são preservadas.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  PERFORM public.set_establishment_member_active(v_member_prof, false);
+  BEGIN
+    PERFORM public.set_establishment_schedule(v_member_prof, '[{"weekday":1,"start_time":"01:00","end_time":"02:00"}]'::jsonb);
+    RAISE EXCEPTION 'Inactive member must not receive a new schedule';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Vinculo inativo%' THEN
+      RAISE EXCEPTION 'Unexpected error for inactive member: %', SQLERRM;
+    END IF;
+  END;
+  PERFORM public.set_establishment_member_active(v_member_prof, true);
+  ASSERT (SELECT count(*) FROM public.establishment_schedules WHERE member_id = v_member_prof) = 7,
+    'Existing schedule rows must be preserved';
+
+  -- (5) Relógio oficial do servidor no fuso do estabelecimento.
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  v_clock := public.get_establishment_clock(v_est_a);
+  ASSERT v_clock->>'timezone' = 'America/Sao_Paulo', 'Establishment timezone must be returned';
+  ASSERT v_clock->>'local_date' ~ '^\d{4}-\d{2}-\d{2}$' AND v_clock->>'local_time' ~ '^\d{2}:\d{2}$',
+    'Clock must expose local_date/local_time from the server';
+  v_clock := NULL;
+
+  -- (6) Check-in do próprio usuário (horário do servidor, sem duplicidade).
+  v_record_id := (public.record_attendance_check_in(v_est_a)).id;
+  ASSERT v_record_id IS NOT NULL, 'Check-in must create the daily record';
+  ASSERT (SELECT check_out_at IS NULL FROM public.attendance_records WHERE id = v_record_id), 'No check-out at check-in time';
+  BEGIN
+    PERFORM public.record_attendance_check_in(v_est_a);
+    RAISE EXCEPTION 'Duplicate check-in must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Registro de entrada ja existe para hoje%'
+       AND SQLERRM NOT LIKE 'Existe um registro de entrada em aberto%' THEN
+      RAISE EXCEPTION 'Unexpected duplicate check-in error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (6a) Usuário de outra empresa não registra presença no estabelecimento alheio.
+  PERFORM set_config('request.jwt.claim.sub', v_prof_b::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"55555555-5555-5555-5555-555555555555","role":"authenticated","aud":"authenticated","email":"prof-b@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.record_attendance_check_in(v_est_a);
+    RAISE EXCEPTION 'Non-member must not check-in in another establishment';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Vinculo inexistente ou inativo%' THEN
+      RAISE EXCEPTION 'Unexpected foreign check-in error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (6b) Escrita direta exige o papel autenticado: assumimos o role para a
+  -- tentativa (o seed roda como superusuário, que ignora GRANTs).
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  PERFORM set_config('role', 'authenticated', true);
+  BEGIN
+    INSERT INTO public.establishment_schedules (establishment_id, member_id, weekday, is_day_off, start_time, end_time)
+    VALUES (v_est_a, v_member_prof, 3, false, '01:00', '02:00');
+    RAISE EXCEPTION 'Authenticated must not write schedules directly';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+
+  -- (7) Check-out exige entrada aberta; duplicidade recusada.
+  v_record_id := (public.record_attendance_check_out(v_est_a)).id;
+  ASSERT v_record_id IS NOT NULL, 'Check-out must complete the daily record';
+  ASSERT (SELECT check_out_at IS NOT NULL FROM public.attendance_records WHERE id = v_record_id),
+    'Check-out must be persisted by the server';
+  BEGIN
+    PERFORM public.record_attendance_check_out(v_est_a);
+    RAISE EXCEPTION 'Duplicate check-out must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Saida ja registrada para hoje%' THEN
+      RAISE EXCEPTION 'Unexpected duplicate check-out error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- Perde o registro: manager sem entrada não pode registrar saída.
+  PERFORM set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333'::uuid::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.record_attendance_check_out(v_est_a);
+    RAISE EXCEPTION 'Check-out without check-in must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Nenhum registro de entrada para hoje%' THEN
+      RAISE EXCEPTION 'Unexpected check-out error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (8) Exceções: somente proprietário, período validado.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.record_attendance_exception(v_member_prof, 'absence',
+      (SELECT now()::date), (SELECT now()::date - 1), NULL);
+    RAISE EXCEPTION 'Invalid exception dates must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Periodo de datas invalido%' THEN
+      RAISE EXCEPTION 'Unexpected invalid-dates error: %', SQLERRM;
+    END IF;
+  END;
+  PERFORM public.record_attendance_exception(v_member_prof, 'absence',
+    (SELECT now()::date), (SELECT now()::date), 'Aviso attendance test');
+  ASSERT EXISTS (
+    SELECT 1 FROM public.attendance_exceptions e
+    JOIN public.establishment_members m ON m.id = e.member_id
+    WHERE e.member_id = v_member_prof AND e.exception_type = 'absence'
+  ), 'Absence must be recorded by the owner';
+
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.record_attendance_exception(v_member_prof, 'absence',
+      (SELECT now()::date), (SELECT now()::date), NULL);
+    RAISE EXCEPTION 'Non-owner must not record exceptions';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Apenas o proprietario registra exceções%' THEN
+      RAISE EXCEPTION 'Unexpected exception-permission error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (9) Correção administrativa com auditoria (somente proprietário).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  PERFORM public.correct_attendance_record(
+    v_record_id,
+    (SELECT now() AT TIME ZONE 'America/Sao_Paulo')::timestamptz,
+    (SELECT now() AT TIME ZONE 'America/Sao_Paulo')::timestamptz,
+    'Correção de teste')
+  ;
+  SELECT count(*) INTO v_corrections
+  FROM public.attendance_corrections WHERE attendance_id = v_record_id;
+  ASSERT v_corrections = 1, 'Correction audit row must exist exactly once';
+  ASSERT (SELECT check_out_source FROM public.attendance_records WHERE id = v_record_id) = 'owner',
+    'Corrected check-out must be audited as owner action';
+
+  -- (10) Isolamento: profissional de B não lê presença de A (RLS).
+  PERFORM set_config('request.jwt.claim.sub', v_prof_b::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"55555555-5555-5555-5555-555555555555","role":"authenticated","aud":"authenticated","email":"prof-b@agenda.flow.test"}', true);
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.attendance_records WHERE establishment_id = v_est_a
+  ), 'Attendance of tenant A must be invisible to a professional of tenant B';
+  ASSERT NOT EXISTS (
+    SELECT 1 FROM public.establishment_schedules WHERE establishment_id = v_est_a
+  ), 'Schedules of tenant A must be invisible to a professional of tenant B';
+
+  -- (11) RLS self-or-owner: mantém o papel `authenticated` (ativo desde 6b).
+  -- Profissional vê SOMENTE os próprios registros (não os do colega).
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  ASSERT (SELECT count(*) FROM public.attendance_records WHERE establishment_id = v_est_a) = 1,
+    'Professional must see only the own attendance record';
+  ASSERT (SELECT count(*) FROM public.attendance_exceptions WHERE establishment_id = v_est_a) = 1,
+    'Professional must see only the own exceptions';
+
+  -- Colega (manager) não vê presença alheia.
+  PERFORM set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333'::uuid::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+  ASSERT (SELECT count(*) FROM public.attendance_records WHERE establishment_id = v_est_a) = 0,
+    'Colleague must not read attendance of teammates';
+  ASSERT (SELECT count(*) FROM public.attendance_exceptions WHERE establishment_id = v_est_a) = 0,
+    'Colleague must not read exceptions of teammates';
+
+  -- Proprietário vê a equipe inteira.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  ASSERT (SELECT count(*) FROM public.attendance_records WHERE establishment_id = v_est_a) >= 1,
+    'Owner must read the team attendance';
+  ASSERT (SELECT count(*) FROM public.attendance_corrections WHERE establishment_id = v_est_a) = 1,
+    'Owner must read the team correction history';
+
+  -- (12) Fuso inválido é recusado pelo relógio (validação IANA real).
+  PERFORM set_config('role', 'none', true);
+  UPDATE public.establishments SET timezone = 'Marte/Phobos' WHERE id = v_est_a;
+  PERFORM set_config('request.jwt.claim.sub', v_prof_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated","aud":"authenticated","email":"prof-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.get_establishment_clock(v_est_a);
+    RAISE EXCEPTION 'Invalid IANA timezone must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Fuso horario invalido%' THEN
+      RAISE EXCEPTION 'Unexpected invalid-timezone error: %', SQLERRM;
+    END IF;
+  END;
+  PERFORM set_config('role', 'none', true);
+  UPDATE public.establishments SET timezone = 'America/Sao_Paulo' WHERE id = v_est_a;
+  ASSERT (public.get_establishment_clock(v_est_a)->>'timezone') = 'America/Sao_Paulo',
+    'Valid timezone must work again after restore';
+
+  -- (13) Turno noturno: check-out fecha o registro EM ABERTO do dia anterior.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  PERFORM public.set_establishment_schedule(
+    (SELECT id FROM public.establishment_members WHERE establishment_id = v_est_a AND user_id = '33333333-3333-3333-3333-333333333333'::uuid),
+    '[{"weekday":0,"start_time":"22:00","end_time":"02:00"},{"weekday":1,"start_time":"22:00","end_time":"02:00"},{"weekday":2,"start_time":"22:00","end_time":"02:00"},{"weekday":3,"start_time":"22:00","end_time":"02:00"},{"weekday":4,"start_time":"22:00","end_time":"02:00"},{"weekday":5,"start_time":"22:00","end_time":"02:00"},{"weekday":6,"start_time":"22:00","end_time":"02:00"}]'::jsonb
+  );
+
+  PERFORM set_config('request.jwt.claim.sub', '33333333-3333-3333-3333-333333333333'::uuid::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","aud":"authenticated","email":"manager-a@agenda.flow.test"}', true);
+  DECLARE
+    v_night_id uuid;
+  BEGIN
+    v_night_id := (public.record_attendance_check_in(v_est_a)).id;
+    -- Meia-noite passa: o registro passa a pertencer ao dia anterior.
+    PERFORM set_config('role', 'none', true);
+    UPDATE public.attendance_records SET work_date = work_date - 1 WHERE id = v_night_id;
+    v_night_id := (public.record_attendance_check_out(v_est_a)).id;
+    ASSERT (
+      SELECT check_out_at IS NOT NULL
+             AND work_date = (SELECT (now() AT TIME ZONE (SELECT timezone FROM public.establishments WHERE id = v_est_a))::date - 1)
+      FROM public.attendance_records WHERE id = v_night_id
+    ), 'Overnight check-out must close the open record of the previous local day';
+  END;
+
+  -- (13a) Sem registro em aberto nem registro HOJE: recusa sem mentir.
+  BEGIN
+    PERFORM public.record_attendance_check_out(v_est_a);
+    RAISE EXCEPTION 'Second check-out without open record must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Nenhum registro de entrada para hoje%' THEN
+      RAISE EXCEPTION 'Unexpected second check-out error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (13b) Check-in não abre segundo registro com entrada em aberto.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  DECLARE
+    v_owner_record uuid;
+  BEGIN
+    v_owner_record := (public.record_attendance_check_in(v_est_a)).id;
+    PERFORM set_config('role', 'none', true);
+    UPDATE public.attendance_records SET work_date = work_date - 1 WHERE id = v_owner_record;
+    BEGIN
+      PERFORM public.record_attendance_check_in(v_est_a);
+      RAISE EXCEPTION 'Check-in with an open record must be refused';
+    EXCEPTION WHEN others THEN
+      IF SQLERRM NOT LIKE 'Existe um registro de entrada em aberto%' THEN
+        RAISE EXCEPTION 'Unexpected open-record error: %', SQLERRM;
+      END IF;
+    END;
+  END;
+
+  -- (14) FK COMPOSTA na auditoria: correção não cruza tenants.
+  PERFORM set_config('role', 'none', true);
+  BEGIN
+    INSERT INTO public.attendance_corrections (establishment_id, attendance_id, reason, corrected_by)
+    VALUES (v_est_b, v_record_id, 'Cross-tenant correction', v_owner_a);
+    RAISE EXCEPTION 'Correction with foreign establishment must be refused';
+  EXCEPTION WHEN foreign_key_violation THEN
+    NULL;
+  END;
+
+  -- (14a) HISTÓRICO PRESERVADO: registro com correção não é apagado (RESTRICT).
+  BEGIN
+    DELETE FROM public.attendance_records WHERE id = v_record_id;
+    RAISE EXCEPTION 'Deleting an audited attendance record must be restricted';
+  EXCEPTION WHEN foreign_key_violation THEN
+    NULL;
+  END;
+  ASSERT EXISTS (SELECT 1 FROM public.attendance_records WHERE id = v_record_id),
+    'Audited record must remain after restricted delete';
+
+  -- (14b) Cronologia: entrada corrigida deve preceder a saída.
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.correct_attendance_record(
+      v_record_id,
+      (SELECT now() + interval '2 hours'),
+      (SELECT now()),
+      'Teste de cronologia'
+    );
+    RAISE EXCEPTION 'Inverted correction times must be refused';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Horarios inconsistentes%' THEN
+      RAISE EXCEPTION 'Unexpected chronology error: %', SQLERRM;
+    END IF;
+  END;
+
+  -- (15) GARANTIA FÍSICA: o índice único parcial impede duas entradas em
+  -- aberto para o mesmo membro, mesmo em dias diferentes (virada de
+  -- meia-noite) e mesmo escrevendo direto na tabela.
+  PERFORM set_config('role', 'none', true);
+  BEGIN
+    INSERT INTO public.attendance_records
+      (establishment_id, member_id, work_date, check_in_at, check_in_source)
+    VALUES
+      (v_est_a, v_member_owner, (SELECT (now() AT TIME ZONE 'America/Sao_Paulo')::date), now(), 'self');
+    RAISE EXCEPTION 'A second open attendance record must be refused by the partial index';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+  ASSERT (
+    SELECT count(*) FROM public.attendance_records
+    WHERE member_id = v_member_owner AND check_out_at IS NULL
+  ) = 1, 'Exactly one open record may exist per member';
+
+  -- (16) HISTÓRICO PRESERVADO: excluir vínculo não apaga presença nem ausência.
+  BEGIN
+    DELETE FROM public.establishment_members WHERE id = v_member_prof;
+    RAISE EXCEPTION 'Deleting a member with attendance history must be restricted';
+  EXCEPTION WHEN foreign_key_violation THEN
+    NULL;
+  END;
+  ASSERT EXISTS (SELECT 1 FROM public.establishment_members WHERE id = v_member_prof),
+    'Member with history must survive a restricted delete';
+  ASSERT EXISTS (
+    SELECT 1 FROM public.attendance_records WHERE member_id = v_member_prof
+  ), 'Attendance history must survive a member delete attempt';
+  ASSERT EXISTS (
+    SELECT 1 FROM public.attendance_exceptions WHERE member_id = v_member_prof
+  ), 'Exception history must survive a member delete attempt';
+
+  -- (16a) Exclusão definitiva do estabelecimento também não apaga histórico.
+  BEGIN
+    DELETE FROM public.establishments WHERE id = v_est_a;
+    RAISE EXCEPTION 'Deleting an establishment with attendance history must be restricted';
+  EXCEPTION WHEN foreign_key_violation THEN
+    NULL;
+  END;
+  ASSERT EXISTS (SELECT 1 FROM public.establishments WHERE id = v_est_a),
+    'Establishment with history must survive a restricted delete';
+
+  -- (17) INTERVALO NOTURNO: aceito pelo banco (mesma regra da interface).
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  PERFORM public.set_establishment_schedule(
+    v_member_prof,
+    '[{"weekday":0,"is_day_off":true},
+      {"weekday":1,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"},
+      {"weekday":2,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"},
+      {"weekday":3,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"},
+      {"weekday":4,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"},
+      {"weekday":5,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"},
+      {"weekday":6,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"01:00"}]'::jsonb
+  );
+  ASSERT (
+    SELECT break_start = '23:00' AND break_end = '01:00'
+    FROM public.establishment_schedules
+    WHERE member_id = v_member_prof AND weekday = 1
+  ), 'Overnight break (23:00->01:00) must be accepted';
+
+  -- (17a) Intervalo vazio continua proibido (validação não foi removida).
+  BEGIN
+    PERFORM public.set_establishment_schedule(
+      v_member_prof,
+      '[{"weekday":1,"start_time":"22:00","end_time":"02:00","break_start":"23:00","break_end":"23:00"}]'::jsonb
+    );
+    RAISE EXCEPTION 'Zero-length break must be refused';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  -- (18) SAÍDA ESQUECIDA: entrada antiga em aberto bloqueia nova entrada e só
+  -- é liberada pela correção administrativa auditável do proprietário.
+  PERFORM set_config('role', 'none', true);
+  UPDATE public.attendance_records
+  SET work_date = (SELECT (now() AT TIME ZONE 'America/Sao_Paulo')::date - 3)
+  WHERE member_id = v_member_owner AND check_out_at IS NULL;
+
+  PERFORM set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated","email":"owner-a@agenda.flow.test"}', true);
+  BEGIN
+    PERFORM public.record_attendance_check_in(v_est_a);
+    RAISE EXCEPTION 'A forgotten open record must block a new check-in';
+  EXCEPTION WHEN others THEN
+    IF SQLERRM NOT LIKE 'Existe um registro de entrada em aberto%' THEN
+      RAISE EXCEPTION 'Unexpected forgotten-open-record error: %', SQLERRM;
+    END IF;
+  END;
+
+  SELECT id INTO v_record_id FROM public.attendance_records
+  WHERE member_id = v_member_owner AND check_out_at IS NULL;
+
+  PERFORM public.correct_attendance_record(
+    v_record_id,
+    NULL,
+    (SELECT now()),
+    'Correcao de saida esquecida'
+  );
+  ASSERT (
+    SELECT check_out_at IS NOT NULL AND corrected_at IS NOT NULL
+    FROM public.attendance_records WHERE id = v_record_id
+  ), 'Owner correction must close the forgotten open record with audit metadata';
+
+  PERFORM public.record_attendance_check_in(v_est_a);
+  ASSERT (
+    SELECT count(*) FROM public.attendance_records
+    WHERE member_id = v_member_owner
+      AND check_out_at IS NULL
+      AND work_date = (SELECT (now() AT TIME ZONE 'America/Sao_Paulo')::date)
+  ) = 1, 'After the auditable correction the user may check in again';
+
+  PERFORM public.record_attendance_check_out(v_est_a);
+
+  -- Restaura o papel da sessão (o fim do bloco devolve o contexto ao seed).
+  PERFORM set_config('role', 'none', true);
+
+  RAISE NOTICE 'Schedule and presence assertions passed.';
+END $$;
+
+
+--------------------------------------------------------------------------------
 -- 5. Cleanup of the probe role grants
 --------------------------------------------------------------------------------
 DO $$

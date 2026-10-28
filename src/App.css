@@ -1952,3 +1952,171 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Escalas e presença (etapa 8) ------------------------------------------- */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.presence-self {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.presence-self__status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.presence-self__times {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.presence-self__warning {
+  color: #b45309;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.presence-self__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.schedule-modal__rows {
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.schedule-modal__row {
+  display: grid;
+  grid-template-columns: 150px repeat(4, minmax(90px, 1fr));
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.schedule-modal__row:first-child {
+  border-top: none;
+}
+
+.schedule-modal__day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.schedule-modal__row input[type='time'] {
+  width: 100%;
+}
+
+.attendance-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.attendance-history__item {
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.attendance-history__item:first-child {
+  border-top: none;
+}
+
+.attendance-history__main {
+  flex: 1;
+  min-width: 220px;
+}
+
+.attendance-history__date {
+  font-weight: 600;
+  color: var(--text-h);
+  margin-right: 10px;
+}
+
+.attendance-history__detail {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.attendance-history__state {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: #f3f4f6;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.attendance-history__state.is-done {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: #fff;
+}
+
+.attendance-correction {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.attendance-correction label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.attendance-correction__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .schedule-modal__row {
+    grid-template-columns: 130px repeat(2, 1fr);
+  }
+
+  .attendance-history__item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

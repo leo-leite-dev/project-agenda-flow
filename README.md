@@ -13,7 +13,7 @@ O **Agenda Flow** é uma plataforma SaaS de gestão para **barbearias e salões 
 
 Cada estabelecimento é um **tenant** independente: possui seus próprios dados, funcionários e vínculos de usuários, com isolamento garantido no banco de dados por **Row Level Security (RLS)** — a arquitetura é **multi-tenant**, com um único banco PostgreSQL compartilhado e políticas que impedem o acesso cruzado entre estabelecimentos.
 
-> **Status atual:** autenticação (Google e e-mail/senha), cadastro e seleção de estabelecimentos e o dashboard administrativo (Visão geral com navegação por módulos) estão implementados. Os módulos de agenda, serviços, equipe, clientes e financeiro constam do roadmap.
+> **Status atual:** autenticação (Google e e-mail/senha), cadastro e seleção de estabelecimentos, dashboard administrativo, catálogo de serviços, gestão de equipe/convites, gestão de profissionais e **escalas de trabalho com registro de presença** estão implementados. Os módulos de agenda de atendimentos, clientes e financeiro constam do roadmap.
 
 ---
 
@@ -41,7 +41,8 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 | Dashboard administrativo | Área administrativa com sidebar (Visão geral, Agenda, Serviços, Equipe, Clientes, Financeiro e Configurações), boas-vindas personalizada, checklist de configuração e indicadores em estados vazios honestos. |
 | Gestão de serviços (Etapa 5) | Catálogo por estabelecimento: cadastro em modal, edição, ativação/desativação lógica com confirmação, busca por nome, filtros por categoria e status, preços em centavos formatados em R$. Escritas por RPCs que validam autenticação e papel de proprietário no banco. |
 | Gestão de equipe e convites (Etapa 6) | Equipe do estabelecimento com cargo, situação do vínculo, data de entrada e permissões refinadas; convites por e-mail com link seguro (compartilhamento manual por e-mail ou WhatsApp), aceite autenticado, cancelamento e regras de cargo no banco. |
-| Gestão de Profissionais (Etapa 7) | Aba "Profissionais" na Gestão de Equipe: habilita/pausa membros para atendimentos (qualquer cargo), associa serviços ao profissional (N:N) com catálogo real do estabelecimento e quantidades reais no dashboard. Escritas por RPCs exclusivas do proprietário; integridade entre tenants garantida por FKs compostas. **Migration 00009 aplicada no remoto.** |
+| Gestão de Profissionais (Etapa 7) | Aba "Profissionais" na Gestão de Equipe: habilita/pausa membros para atendimentos (qualquer cargo), associa serviços ao profissional (N:N) com catálogo real do estabelecimento e quantidades reais no dashboard. Escritas por RPCs exclusivas do proprietário; integridade entre tenants garantida por FKs compostas. Leitura por consultas separadas filtradas pelo estabelecimento (correção do PGRST200). **Migration 00009 aplicada no remoto.** |
+| Escalas e Presença (Etapa 8) | Aba "Escalas e Presença" na Equipe: escala semanal por membro (todos os cargos), entrada/saída individuais com horário do servidor, ausências e exceções, histórico de presença e correções administrativas auditáveis. Suporta turnos noturnos, preserva históricos e restringe a leitura ao próprio funcionário ou ao proprietário. **Migration 00011 aplicada no remoto.** |
 | Tradução de cargos e permissões (pt-BR) | Rótulos de apresentação centralizados em `src/lib/labels.ts`: cargos ("Proprietário", "Gerente"...) e as 17 chaves de permissão descritas em português nas modais de convite e de cargo/permissões (com `aria-label` acessíveis). As chaves técnicas seguem inalteradas para o banco. |
 | Navegação responsiva | Layout adaptativo: sidebar fixa no desktop e drawer com backdrop em tablets e smartphones. |
 | Logout | Encerramento de sessão pelo menu do perfil do dashboard. |
@@ -100,6 +101,21 @@ Reduzir a dependência de planilhas, cadernos e mensagens dispersas ao oferecer 
 - **Dashboard**: o indicador "Profissionais" usa dados reais (habilitados e sem serviços) e a etapa "Adicionar profissionais à equipe" do checklist fica concluída quando existe ao menos um membro habilitado.
 - **Preparação para a agenda**: a estrutura pronta (`establishment_professional_services`) já permite um futuro agendamento identificar estabelecimento, serviço e profissional habilitado; calendário, horários e reservas NÃO fazem parte desta etapa.
 
+### Escalas e Presença — uso e regras
+
+- **Aba "Escalas e Presença"** dentro do módulo **Equipe**. O proprietário configura escalas e registra exceções/correções; **todos os cargos** registram a própria entrada e saída.
+- **Escala ≠ presença ≠ atendimento**: `establishment_schedules` é a escala prevista, `attendance_records` é a entrada/saída efetivamente registrada e ambos são independentes de agendamentos de clientes. A presença nunca é apresentada como atendimento em andamento.
+- **Escala semanal**: um registro por membro e dia da semana (`weekday` de 0 a 6), com folga opcional, início/fim de expediente e intervalo. **Turnos noturnos são permitidos** (ex.: 22:00→02:00) e o intervalo também pode cruzar a meia-noite (ex.: 23:00→01:00); o banco só recusa intervalo com início igual ao fim. A validação do frontend (`validateScheduleDrafts`) espelha as constraints do PostgreSQL.
+- **Check-in e check-out**: o horário vem sempre de `now()` no servidor, no fuso IANA do estabelecimento (`establishments.timezone`, padrão `America/Sao_Paulo`). A identidade vem de `auth.uid()` — ninguém registra presença em nome de outra pessoa. Se o vínculo estiver inativo, os registros são recusados.
+- **Saída em turno noturno**: o check-out fecha o registro **em aberto** mais recente, inclusive o iniciado no dia anterior (22h→02h). Há guarda atômica contra duas saídas simultâneas sobrescreverem o horário.
+- **Uma entrada aberta por membro**: garantida pelo índice único parcial `attendance_records_one_open_per_member (member_id) WHERE check_out_at IS NULL`, mesmo em escrita direta na tabela. Uma saída esquecida **não** é contornada com outro check-in: o proprietário fecha o registro pela correção administrativa auditável.
+- **Ausências e exceções** (somente proprietário): falta, atraso justificado, saída antecipada, folga excepcional, férias e ajuste de escala, com período de datas validado no banco.
+- **Histórico**: existe um registro por membro por dia (`UNIQUE (member_id, work_date)`) — **limitação atual**: não há múltiplos turnos no mesmo dia para o mesmo membro.
+- **Correções administrativas** (somente proprietário): alteram entrada/saída com justificativa obrigatória, registram a auditoria integral em `attendance_corrections` (valores anteriores e novos, autor e motivo) e recusam horários em que a entrada não precede a saída.
+- **Privacidade**: pela RLS, um funcionário lê somente os próprios registros, escalas e exceções; colegas não veem a presença uns dos outros; o proprietário lê a equipe inteira do tenant. A leitura é sempre limitada ao estabelecimento ativo.
+- **Preservação de histórico**: excluir um vínculo ou um estabelecimento **não** apaga presença, ausências ou correções (FKs `ON DELETE RESTRICT`). O desligamento comum é lógico (`set_establishment_member_active`); uma exclusão definitiva exigirá rotina explícita de arquivamento/expurgo.
+- **Sem processos em segundo plano**: o status exibido (em expediente, atrasado, em intervalo, ausente, saiu etc.) é calculado pela aplicação a partir da escala, dos registros, das exceções e do relógio do servidor.
+
 ### Vínculos do usuário e seleção de estabelecimento — regras
 
 - **Um vínculo por estabelecimento**: um usuário possui **no máximo um vínculo efetivo** com determinado estabelecimento, com um cargo definido nesse vínculo. O mesmo usuário pode ter vínculos em **empresas diferentes**. A unicidade é garantida no banco pela constraint `UNIQUE (establishment_id, user_id)`.
@@ -116,7 +132,7 @@ Funcionalidades planejadas para as próximas etapas (ainda não implementadas):
 
 - **Evolução do catálogo de serviços** — categorias personalizadas e paginação (o cadastro, edição e controle de status já estão implementados).
 - **Gestão de equipe** — invitation por telefone com verificação de telefone, permissões por módulo mais refinadas e auditoria de alterações. *(A gestão de equipe por e-mail está implementada na etapa 6.)*
-- **Horários de funcionamento** — dias e horários de atendimento.
+- **Horário de funcionamento do estabelecimento** — dias e horários de abertura (as escalas individuais dos membros já estão implementadas na etapa 8).
 - **Agenda de atendimentos** — visualização diária, semanal e mensal, com registro por profissional e serviço (a estrutura de profissionais e serviços já está pronta na etapa 7).
 - **Cadastro de clientes** — histórico de atendimentos, preferências e contato.
 - **Gestão financeira** — receitas, despesas e relatórios.
@@ -193,7 +209,9 @@ agenda-flow/
 │   │   ├── 20250127000006_team_management.sql
 │   │   ├── 20250127000007_pending_invitations.sql
 │   │   ├── 20250127000008_membership_integrity.sql
-│   │   └── 20250127000009_professionals.sql
+│   │   ├── 20250127000009_professionals.sql
+│   │   ├── 20250127000010_profile_deletion_safety.sql
+│   │   └── 20250127000011_schedules_presence.sql
 │   └── tests/            # Testes e auditoria do banco
 │       ├── verify_remote.sql         # Auditoria somente leitura (SQL Editor)
 │       ├── audit_membership_links.sql # Auditoria somente leitura dos vínculos
@@ -221,10 +239,14 @@ agenda-flow/
     │   ├── services/     # Componentes da gestão de serviços
     │   │   ├── ConfirmDialog.tsx
     │   │   └── ServiceFormModal.tsx
-    │   └── team/         # Componentes da gestão de equipe e profissionais
+    │   └── team/         # Componentes da gestão de equipe, profissionais e presença
+    │       ├── AttendanceExceptionModal.tsx
+    │       ├── AttendanceHistoryModal.tsx
     │       ├── InviteMemberModal.tsx
     │       ├── MemberPermissionsModal.tsx
-    │       └── ProfessionalServicesModal.tsx
+    │       ├── ProfessionalServicesModal.tsx
+    │       ├── SchedulesPresenceTab.tsx
+    │       └── WorkScheduleModal.tsx
     ├── contexts/         # Contextos React
     │   ├── AuthContext.ts
     │   └── AuthProvider.tsx
@@ -238,6 +260,7 @@ agenda-flow/
     │   ├── establishments.ts
     │   ├── labels.ts        # Rótulos de apresentação (cargos e permissões em pt-BR)
     │   ├── professionals.ts # Gestão de profissionais e serviços associados
+    │   ├── schedules.ts     # Escalas, presença, exceções e correções auditáveis
     │   ├── services.ts      # Catálogo de serviços do estabelecimento
     │   ├── team.ts          # Equipe, convites e matriz de permissões
     │   ├── onboarding.ts    # Decisão de primeiro acesso
@@ -406,6 +429,10 @@ profiles (1:1)
 | `establishment_services` | Catálogo de serviços de cada estabelecimento (preço em centavos). |
 | `establishment_professionals` | Habilitação de um membro como profissional de atendimento (incl. pausa de atendimentos). |
 | `establishment_professional_services` | Associação N:N entre profissionais e serviços, por estabelecimento. |
+| `establishment_schedules` | Escala semanal esperada por membro (folga, expediente e intervalo). |
+| `attendance_records` | Entrada/saída registradas com horário do servidor (um registro por membro/dia). |
+| `attendance_exceptions` | Ausências, folgas excepcionais, férias e ajustes de escala registrados pelo proprietário. |
+| `attendance_corrections` | Trilha de auditoria imutável das correções administrativas de presença. |
 
 ### Arquitetura de permissões
 
@@ -452,6 +479,10 @@ profiles (1:1)
 - Nenhuma chave privada do Supabase é armazenada no código ou exposta ao navegador.
 - `public.profiles` não aceita `INSERT`/`DELETE` direto do role `authenticated`: perfis só são criados pelo trigger, pelo backfill ou por `ensure_profile()`.
 - A migration `20250127000010_profile_deletion_safety.sql` substitui cascatas de exclusão em `establishments.owner_id`, `establishment_members.user_id` e `establishment_invitations.invited_by` por `RESTRICT`, protegendo empresas, vínculos e histórico de convites contra exclusão acidental de perfil. **Aplicação confirmada no Supabase remoto.**
+- **Presença (etapa 8)**: a migration `20250127000011_schedules_presence.sql` cria as tabelas de escalas/presença com RLS. Um funcionário só lê os próprios registros; colegas não leem a presença uns dos outros; o proprietário lê a equipe do tenant. Apenas `authenticated` recebe `SELECT` nas tabelas e `EXECUTE` nas seis RPCs; `anon` não tem acesso. O check-in/check-out usa a identidade de `auth.uid()` e o horário `now()` do servidor, no fuso IANA do estabelecimento.
+- **Uma entrada aberta por membro**: índice único parcial `attendance_records_one_open_per_member` em `member_id` quando `check_out_at IS NULL`, garantindo no PostgreSQL que nem escrita direta nem concorrência criem duas entradas abertas (inclusive atravessando a meia-noite).
+- **Histórico de presença preservado**: as FKs de `attendance_records`, `attendance_exceptions` e `attendance_corrections` usam `ON DELETE RESTRICT`; excluir vínculo ou estabelecimento com histórico é bloqueado e o desligamento comum permanece lógico. Exclusões definitivas exigirão arquivamento/expurgo explícito.
+- **Auditoria de correções**: toda correção administrativa exige justificativa, grava valores anteriores/novos e autor em `attendance_corrections`; nenhuma RPC de presença aceita horário informado pelo navegador.
 - Concessões automáticas (`ALTER DEFAULT PRIVILEGES`) foram **neutralizadas para os objetos do projeto**: as default privileges do role `postgres` (que cria as tabelas e funções do Agenda Flow) para `PUBLIC`/`anon`/`authenticated` são revogadas — incluindo `TRUNCATE`, `REFERENCES`, `TRIGGER` e `MAINTAIN`. As default privileges de papéis internos da plataforma (ex.: `supabase_admin`) **não são alteráveis** pelo role `postgres` e, por isso, são preservadas e apenas reportadas na auditoria.
 
 ---
@@ -528,11 +559,11 @@ git push origin main
 
 ## Aplicação das migrations no Supabase
 
-As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **27/10/2026**, confirmou as migrations **00000 a 00010 registradas como aplicadas no Supabase remoto**. As migrations **00009 (profissionais)** e **00010 (proteção contra exclusões acidentais)** estão aplicadas no remoto.
+As migrations estão versionadas em `supabase/migrations/`. O comando somente leitura `npx supabase migration list --linked`, executado em **28/10/2026**, confirmou as migrations **00000 a 00011 registradas como aplicadas no Supabase remoto**. As migrations **00009 (profissionais)**, **00010 (proteção contra exclusões acidentais)** e **00011 (escalas e presença)** estão aplicadas no remoto.
 
 Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez sem duplicar dados, sem sobrescrever perfis existentes e sem alterar credenciais em `auth.users`.
 
-> A verificação automatizada do banco remoto (`supabase/tests/verify_remote.sql`, somente leitura) foi executada após a aplicação da migration 00010 e concluída sem falhas. O banco remoto está atualmente vazio de dados de aplicação (0 usuários, perfis, estabelecimentos e vínculos), conforme a decisão do proprietário de remover os dados de teste.
+> A verificação automatizada do banco remoto (`supabase/tests/verify_remote.sql`, somente leitura) deve ser executada pelo SQL Editor após aplicações de migration. Nesta entrega, a auditoria remota foi parcial: o histórico de migrations, as tabelas e o índice único parcial foram confirmados por comandos da CLI e por chamadas REST somente leitura; como o ambiente não disponibilizou conexão SQL direta (sem `psql`/Docker), a checagem integral de políticas, FKs e matriz de `EXECUTE` foi validada localmente pelo `npm run test:db` (PGlite) e permanece recomendada no SQL Editor.
 
 ### Ordem de aplicação
 
@@ -549,6 +580,7 @@ Todas as migrations são **idempotentes**: podem ser executadas mais de uma vez 
 | 9 | `20250127000008_membership_integrity.sql` | Integridade dos vínculos: garante a constraint `UNIQUE (establishment_id, user_id)` (detectada por colunas, não por nome), recusa convite para contato que já pertence ao estabelecimento, **restringe o convite aos cargos de funcionário** (`manager`, `professional`, `receptionist` — sem transferência de propriedade), **valida as permissões concedidas no PostgreSQL** (chaves da matriz do projeto e delegação limitada aos próprios poderes do gerente) e revalida o convite no aceite contra escalonamento de privilégios. **Aplicação confirmada pelo histórico remoto.** |
 | 10 | `20250127000009_professionals.sql` | Etapa 7: habilitação de profissionais de atendimento (`establishment_professionals`, com `accepts_appointments` para pausa) e associação N:N com serviços (`establishment_professional_services`, unicidade por par). RLS de leitura para membros do tenant, RPCs exclusivas do proprietário (habilitar/pausar, associar/remover) e **FKs compostas** que impedem associação entre estabelecimentos no nível do banco. **Aplicação confirmada pelo histórico remoto em 27/10/2026.** |
 | 11 | `20250127000010_profile_deletion_safety.sql` | Troca cascatas de exclusão de perfil por `RESTRICT` nas relações de proprietário, funcionário e convite, preservando dados de tenant e exigindo operação administrativa explícita para exclusões definitivas. **Aplicação confirmada pelo histórico remoto.** |
+| 12 | `20250127000011_schedules_presence.sql` | Etapa 8: escalas semanais, registros de presença, exceções e correções auditáveis. Fuso horário por estabelecimento, turnos noturnos, índice único parcial de entrada aberta, RLS self-or-owner e FKs `RESTRICT` que preservam o histórico. **Aplicação confirmada pelo histórico remoto em 28/10/2026.** |
 
 ### Opção 1: Supabase CLI (recomendado)
 
@@ -563,7 +595,7 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-> O histórico remoto já contém 00000–00010. Não é necessário `migration repair` nem reaplicar arquivos SQL desta entrega. Para futuras migrations, confira primeiro `npx supabase migration list --linked`; alterações no banco exigem autorização específica.
+> O histórico remoto já contém 00000–00011. Não é necessário `migration repair` nem reaplicar arquivos SQL desta entrega. Para futuras migrations, confira primeiro `npx supabase migration list --linked`; alterações no banco exigem autorização específica.
 
 ### Opção 2: SQL Editor no Dashboard
 
@@ -587,6 +619,7 @@ O script é somente leitura e falha com uma mensagem explícita caso exista:
 - GRANTs faltando (ou permissões de escrita em `profiles` indevidas);
 - tabela pública com RLS desabilitado;
 - profissional ou associação de serviços cruzando estabelecimentos (etapa 7);
+- escala/presença/exceção cruzando estabelecimentos, índice único de entrada aberta ausente ou FKs de histórico em cascata (etapa 8);
 - matriz de `EXECUTE` incorreta nas RPCs de profissionais.
 
 ### Testes locais
@@ -614,6 +647,7 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 | Escalonamento de privilégios | `manager` não cria/promove `owner`; `authenticated` não escreve perfis, vínculos nem permissões. |
 | Gestão de serviços | Cadastro e edição persistidos, ativação/desativação lógica, valores inválidos recusados, isolamento entre estabelecimentos, bloqueio de gestor/profissional/outro proprietário e recusa de escrita direta. Os testes negativos não capturam a própria falha de asserção. |
 | Gestão de Profissionais (etapa 7) | Habilitação de membros com cargos distintos, pausa sem desativar o vínculo, associações N:N persistidas, duplicado e cross-tenant recusados (RPC + FK composta), serviço inativo sem nova associação (associação antiga preservada), vínculo desativado inelegível com histórico preservado, autenticação obrigatória, recusa de escrita direta e leitura isolada por RLS. As asserções são vacuidade-prova (mutações das guardas provocam falha). |
+| Escalas e Presença (etapa 8) | Escala com todos os dias, turno e intervalo noturnos, recusa de dias duplicados e de intervalo vazio; check-in/check-out com identidade do autenticado e horário do servidor; bloqueio de entrada duplicada e de segunda entrada aberta; check-out que fecha registro iniciado no dia anterior; exceções e datas inválidas; correção auditada, cronologia e recusa de correção cross-tenant; saída esquecida liberada apenas pela correção do proprietário; RLS self-or-owner (colega não lê presença alheia); exclusão de vínculo/estabelecimento com histórico bloqueada; fuso IANA inválido recusado. |
 | Tradução de rótulos | A matriz `PERMISSION_LABELS` cobre exatamente as 17 chaves do CHECK do banco; chaves desconhecidas caem para o valor técnico (sem tradução inventada); cargos recebem rótulo pt-BR centralizado. |
 | Concessões herdadas de `PUBLIC` | Nenhuma função ou tabela do schema `public` mantém privilégio padrão implícito. |
 
@@ -651,16 +685,17 @@ O arquivo `supabase/seed.sql` cria usuários e dados sintéticos e executa asser
 - ✅ Provisionamento garantido de `public.profiles` para usuários Google e e-mail/senha (trigger, backfill idempotente e `ensure_profile()`).
 - ✅ Permissões do role `authenticated` versionadas em migration, com isolamento multi-tenant preservado.
 - ✅ Testes de integração do banco executados em PostgreSQL real (`npm run test:db`), com papéis e identidades equivalentes aos de usuários reais.
-- ✅ Migrations 00000–00010 registradas como aplicadas no Supabase remoto (histórico consultado em 27/10/2026).
+- ✅ Migrations 00000–00011 registradas como aplicadas no Supabase remoto (histórico consultado em 28/10/2026).
 - ✅ Etapa 6 (gestão de equipe, convites e integridade dos vínculos) aplicada no remoto e publicada no GitHub/Cloudflare Pages.
 - ✅ Gestão de serviços (Etapa 5): tela funcional, RPCs, migration 00005 e testes automatizados.
-- ✅ Gestão de Profissionais (Etapa 7): aba "Profissionais" na Equipe, habilitação/pausa de atendimentos e associação serviço↔profissional; migration 00009 aplicada no Supabase remoto.
+- ✅ Gestão de Profissionais (Etapa 7): aba "Profissionais" na Equipe, habilitação/pausa de atendimentos e associação serviço↔profissional; migration 00009 aplicada no Supabase remoto; leitura corrigida com consultas separadas por tenant (PGRST200).
+- ✅ Escalas e Presença (Etapa 8): aba própria na Equipe, escala semanal por membro, check-in/check-out com horário do servidor, exceções, histórico e correções auditáveis; turnos noturnos, RLS self-or-owner, histórico preservado e migration 00011 aplicada no Supabase remoto.
 - ✅ Rótulos de cargos e permissões em português centralizados (`src/lib/labels.ts`), sem alterar chaves técnicas do banco.
 - ✅ Publicação no Cloudflare Pages integrada ao GitHub (branch `main` → `https://project-agenda-flow.pages.dev`).
 - As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` devem estar configuradas no ambiente de produção do Cloudflare Pages; a validação manual autenticada continua necessária após cada publicação.
-- ✅ Auditoria automatizada do banco remoto (`verify_remote.sql`) executada após a aplicação da migration 00010, sem inconsistências críticas; o proprietário removeu intencionalmente os dados de teste e o banco está vazio de dados de aplicação.
-- ⏳ Módulos de agenda, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada; profissionais e serviços estão prontos para a agenda).
-- ⏳ Próxima etapa: Horários e Disponibilidade, com definição de horários de funcionamento e disponibilidade de atendimento.
+- ✅ Auditoria remota parcial nesta entrega: histórico de migrations, tabelas e índice único parcial confirmados por CLI/REST somente leitura; a auditoria SQL integral (`verify_remote.sql`) permanece recomendada no SQL Editor, pois o ambiente não ofereceu conexão direta ao Postgres.
+- ⏳ Módulos de agenda de atendimentos, clientes, financeiro e configurações ainda não iniciados (estrutura de navegação já preparada; profissionais, serviços e escalas estão prontos para a agenda).
+- ⏳ Próxima etapa: horário de funcionamento do estabelecimento e agenda de atendimentos (as escalas individuais já estão implementadas).
 - ⏳ Painel de funcionários e envio real de convites ainda não implementados (RPCs já existem no banco).
 
 Consulte o arquivo [`CHANGELOG.md`](./CHANGELOG.md) para acompanhar as mudanças realizadas.

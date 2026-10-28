@@ -4,6 +4,7 @@ import { DashboardLayout } from '../components/dashboard/DashboardLayout'
 import { InviteMemberModal } from '../components/team/InviteMemberModal'
 import { MemberPermissionsModal } from '../components/team/MemberPermissionsModal'
 import { ProfessionalServicesModal } from '../components/team/ProfessionalServicesModal'
+import { SchedulesPresenceTab } from '../components/team/SchedulesPresenceTab'
 import { ConfirmDialog } from '../components/services/ConfirmDialog'
 import { SparkIcon, TeamIcon } from '../components/dashboard/icons'
 import { useAuth } from '../hooks/useAuth'
@@ -36,7 +37,7 @@ import {
 type RoleFilter = 'todos' | TeamRole
 type StatusFilter = 'todos' | 'ativos' | 'inativos'
 type InvitationFilter = 'todas' | InvitationStatus
-type TeamTab = 'equipe' | 'profissionais'
+type TeamTab = 'equipe' | 'profissionais' | 'escalas'
 
 function formatDate(value: string): string {
   try {
@@ -422,6 +423,15 @@ export function TeamPage() {
         >
           Profissionais
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'escalas'}
+          className={`dash-tabs__tab${tab === 'escalas' ? ' dash-tabs__tab--active' : ''}`}
+          onClick={() => setTab('escalas')}
+        >
+          Escalas e Presença
+        </button>
       </div>
 
       {feedback && (
@@ -611,6 +621,14 @@ export function TeamPage() {
             )}
           </section>
         </>
+      ) : tab === 'escalas' ? (
+        <SchedulesPresenceTab
+          establishmentId={establishment?.id ?? null}
+          establishmentName={establishment?.name ?? null}
+          isOwner={isOwner}
+          members={members}
+          currentUserId={user?.id ?? null}
+        />
       ) : (
         <>
           <section className="dash-card dash-toolbar" aria-label="Ferramentas da lista de equipe">

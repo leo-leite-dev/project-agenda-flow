@@ -208,6 +208,94 @@ async function main() {
     return 1
   }
 
+  console.log('\nReaplicação da migration 00011 (escalas, presença e exceções)')
+  const schedulesPresenceMigration = migrationFiles.find((file) => file.startsWith('20250127000011'))
+  if (!schedulesPresenceMigration) {
+    report('fail', 'migration 20250127000011_schedules_presence.sql não encontrada')
+    return 1
+  }
+
+  const schedulesPresenceSql = neutralizePgcryptoExtension(
+    readFileSync(join(migrationsDir, schedulesPresenceMigration), 'utf8'),
+  )
+  const presenceCounters = `
+    (SELECT count(*) FROM public.establishment_schedules) AS schedules,
+    (SELECT count(*) FROM public.attendance_records) AS attendances,
+    (SELECT count(*) FROM public.attendance_exceptions) AS exceptions,
+    (SELECT count(*) FROM public.attendance_corrections) AS corrections
+  `
+  try {
+    const beforePresenceReapply = await db.query(`SELECT ${presenceCounters}`)
+    await db.exec(schedulesPresenceSql)
+    const afterPresenceReapply = await db.query(`SELECT ${presenceCounters}`)
+
+    const beforePresence = beforePresenceReapply.rows[0]
+    const afterPresence = afterPresenceReapply.rows[0]
+
+    if (
+      beforePresence.schedules !== afterPresence.schedules ||
+      beforePresence.attendances !== afterPresence.attendances ||
+      beforePresence.exceptions !== afterPresence.exceptions ||
+      beforePresence.corrections !== afterPresence.corrections
+    ) {
+      report('fail', 'reaplicação da 00011 alterou a quantidade de dados')
+      return 1
+    }
+
+    const timezoneColumn = await db.query(`
+      SELECT attnotnull, pg_get_expr(adbin, adrelid) AS default_expr
+      FROM pg_attribute a
+      JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+      WHERE a.attrelid = 'public.establishments'::regclass
+        AND a.attname = 'timezone'
+    `)
+    if (
+      timezoneColumn.rows.length !== 1 ||
+      timezoneColumn.rows[0].attnotnull !== true ||
+      timezoneColumn.rows[0].default_expr !== "'America/Sao_Paulo'::text"
+    ) {
+      report('fail', 'reaplicação da 00011 não preservou o fuso horário padrão do estabelecimento')
+      return 1
+    }
+
+    const presenceIntegrity = await db.query(`
+      SELECT
+        (SELECT count(*) FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename = 'attendance_records'
+            AND indexname = 'attendance_records_one_open_per_member'
+            AND indexdef ILIKE '%unique%'
+            AND indexdef ILIKE '%check_out_at is null%') AS open_index,
+        (SELECT count(*) FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          WHERE c.contype = 'f'
+            AND t.relname IN ('attendance_records', 'attendance_exceptions', 'attendance_corrections')
+            AND c.confdeltype = 'c') AS cascades,
+        (SELECT count(*) FROM pg_constraint c
+          WHERE c.contype = 'f'
+            AND c.conname IN (
+              'attendance_records_member_establishment_fkey',
+              'attendance_records_establishment_id_fkey',
+              'attendance_exceptions_member_establishment_fkey',
+              'attendance_exceptions_establishment_id_fkey',
+              'attendance_corrections_attendance_establishment_fkey',
+              'attendance_corrections_establishment_id_fkey'
+            )
+            AND c.confdeltype = 'r') AS restricts
+    `)
+    const integrity = presenceIntegrity.rows[0]
+    if (integrity.open_index !== 1 || integrity.cascades !== 0 || integrity.restricts !== 6) {
+      report('fail', 'reaplicação da 00011 não preservou índice aberto único e FKs RESTRICT do histórico')
+      return 1
+    }
+
+    report('ok', 'migration 00011 reaplicada sem falhas e sem perda de dados')
+  } catch (error) {
+    report('fail', `reaplicação da 00011: ${error.message}`)
+    console.log(lineContext(schedulesPresenceSql, error.position))
+    return 1
+  }
+
   console.log('\nReaplicação da migration 00009 (idempotência e preservação de dados)')
   const professionalsMigration = migrationFiles.find((file) => file.startsWith('20250127000009'))
   const beforeReapply = await db.query(`

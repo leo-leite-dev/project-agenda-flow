@@ -275,6 +275,241 @@ export interface Database {
           },
         ]
       }
+      establishment_schedules: {
+        Row: {
+          id: string
+          establishment_id: string
+          member_id: string
+          weekday: number
+          is_day_off: boolean
+          start_time: string | null
+          end_time: string | null
+          break_start: string | null
+          break_end: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          member_id: string
+          weekday: number
+          is_day_off?: boolean
+          start_time?: string | null
+          end_time?: string | null
+          break_start?: string | null
+          break_end?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          member_id?: string
+          weekday?: number
+          is_day_off?: boolean
+          start_time?: string | null
+          end_time?: string | null
+          break_start?: string | null
+          break_end?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'establishment_schedules_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'establishment_schedules_member_establishment_fkey'
+            columns: ['member_id', 'establishment_id']
+            referencedRelation: 'establishment_members'
+            referencedColumns: ['id', 'establishment_id']
+          },
+        ]
+      }
+      attendance_records: {
+        Row: {
+          id: string
+          establishment_id: string
+          member_id: string
+          work_date: string
+          check_in_at: string | null
+          check_out_at: string | null
+          check_in_source: string | null
+          check_out_source: string | null
+          corrected_by: string | null
+          corrected_at: string | null
+          correction_reason: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          member_id: string
+          work_date: string
+          check_in_at?: string | null
+          check_out_at?: string | null
+          check_in_source?: string | null
+          check_out_source?: string | null
+          corrected_by?: string | null
+          corrected_at?: string | null
+          correction_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          member_id?: string
+          work_date?: string
+          check_in_at?: string | null
+          check_out_at?: string | null
+          check_in_source?: string | null
+          check_out_source?: string | null
+          corrected_by?: string | null
+          corrected_at?: string | null
+          correction_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'attendance_records_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'attendance_records_member_establishment_fkey'
+            columns: ['member_id', 'establishment_id']
+            referencedRelation: 'establishment_members'
+            referencedColumns: ['id', 'establishment_id']
+          },
+          {
+            foreignKeyName: 'attendance_records_corrected_by_fkey'
+            columns: ['corrected_by']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      attendance_exceptions: {
+        Row: {
+          id: string
+          establishment_id: string
+          member_id: string
+          start_date: string
+          end_date: string
+          exception_type: 'absence' | 'justified_delay' | 'early_leave' | 'exceptional_day_off' | 'vacation' | 'schedule_adjustment'
+          reason: string | null
+          recorded_by: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          member_id: string
+          start_date: string
+          end_date: string
+          exception_type?: 'absence' | 'justified_delay' | 'early_leave' | 'exceptional_day_off' | 'vacation' | 'schedule_adjustment'
+          reason?: string | null
+          recorded_by: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          member_id?: string
+          start_date?: string
+          end_date?: string
+          exception_type?: 'absence' | 'justified_delay' | 'early_leave' | 'exceptional_day_off' | 'vacation' | 'schedule_adjustment'
+          reason?: string | null
+          recorded_by?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'attendance_exceptions_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'attendance_exceptions_member_establishment_fkey'
+            columns: ['member_id', 'establishment_id']
+            referencedRelation: 'establishment_members'
+            referencedColumns: ['id', 'establishment_id']
+          },
+          {
+            foreignKeyName: 'attendance_exceptions_recorded_by_fkey'
+            columns: ['recorded_by']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      attendance_corrections: {
+        Row: {
+          id: string
+          establishment_id: string
+          attendance_id: string
+          previous_check_in_at: string | null
+          previous_check_out_at: string | null
+          check_in_at: string | null
+          check_out_at: string | null
+          reason: string
+          corrected_by: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          establishment_id: string
+          attendance_id: string
+          previous_check_in_at?: string | null
+          previous_check_out_at?: string | null
+          check_in_at?: string | null
+          check_out_at?: string | null
+          reason: string
+          corrected_by: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          establishment_id?: string
+          attendance_id?: string
+          previous_check_in_at?: string | null
+          previous_check_out_at?: string | null
+          check_in_at?: string | null
+          check_out_at?: string | null
+          reason?: string
+          corrected_by?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'attendance_corrections_establishment_id_fkey'
+            columns: ['establishment_id']
+            referencedRelation: 'establishments'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'attendance_corrections_attendance_id_fkey'
+            columns: ['attendance_id']
+            referencedRelation: 'attendance_records'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'attendance_corrections_corrected_by_fkey'
+            columns: ['corrected_by']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
       member_permissions: {
         Row: {
           id: string
@@ -454,6 +689,102 @@ export interface Database {
           p_service_id: string
         }
         Returns: null
+      }
+      get_establishment_clock: {
+        Args: {
+          p_establishment_id: string
+        }
+        Returns: Json
+      }
+      set_establishment_schedule: {
+        Args: {
+          p_member_id: string
+          p_schedules: Json
+        }
+        Returns: null
+      }
+      record_attendance_check_in: {
+        Args: {
+          p_establishment_id: string
+        }
+        Returns: {
+          id: string
+          establishment_id: string
+          member_id: string
+          work_date: string
+          check_in_at: string | null
+          check_out_at: string | null
+          check_in_source: string | null
+          check_out_source: string | null
+          corrected_by: string | null
+          corrected_at: string | null
+          correction_reason: string | null
+          created_at: string
+          updated_at: string
+        }
+      }
+      record_attendance_check_out: {
+        Args: {
+          p_establishment_id: string
+        }
+        Returns: {
+          id: string
+          establishment_id: string
+          member_id: string
+          work_date: string
+          check_in_at: string | null
+          check_out_at: string | null
+          check_in_source: string | null
+          check_out_source: string | null
+          corrected_by: string | null
+          corrected_at: string | null
+          correction_reason: string | null
+          created_at: string
+          updated_at: string
+        }
+      }
+      record_attendance_exception: {
+        Args: {
+          p_member_id: string
+          p_exception_type: string
+          p_start_date: string
+          p_end_date: string
+          p_reason?: string | null
+        }
+        Returns: {
+          id: string
+          establishment_id: string
+          member_id: string
+          start_date: string
+          end_date: string
+          exception_type: 'absence' | 'justified_delay' | 'early_leave' | 'exceptional_day_off' | 'vacation' | 'schedule_adjustment'
+          reason: string | null
+          recorded_by: string
+          created_at: string
+        }
+      }
+      correct_attendance_record: {
+        Args: {
+          p_attendance_id: string
+          p_check_in?: string | null
+          p_check_out?: string | null
+          p_reason?: string | null
+        }
+        Returns: {
+          id: string
+          establishment_id: string
+          member_id: string
+          work_date: string
+          check_in_at: string | null
+          check_out_at: string | null
+          check_in_source: string | null
+          check_out_source: string | null
+          corrected_by: string | null
+          corrected_at: string | null
+          correction_reason: string | null
+          created_at: string
+          updated_at: string
+        }
       }
       ensure_profile: {
         Args: Record<string, never>

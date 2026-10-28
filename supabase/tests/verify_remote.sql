@@ -79,6 +79,62 @@ BEGIN
 END $$;
 
 --------------------------------------------------------------------------------
+-- 1.2 Integridade histórica de presença (migration 00011)
+--------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_cascades integer;
+  v_restricts integer;
+  v_open_index integer;
+BEGIN
+  SELECT count(*) INTO v_open_index
+  FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND tablename = 'attendance_records'
+    AND indexname = 'attendance_records_one_open_per_member'
+    AND indexdef ILIKE '%unique%'
+    AND indexdef ILIKE '%check_out_at is null%';
+
+  IF v_open_index <> 1 THEN
+    RAISE EXCEPTION 'FALHA: índice único parcial attendance_records_one_open_per_member ausente ou inválido.';
+  END IF;
+
+  RAISE NOTICE 'OK: no máximo uma entrada em aberto por membro é garantida pelo índice parcial.';
+
+  SELECT count(*) INTO v_cascades
+  FROM pg_constraint c
+  JOIN pg_class t ON t.oid = c.conrelid
+  JOIN pg_namespace n ON n.oid = t.relnamespace
+  WHERE c.contype = 'f'
+    AND n.nspname = 'public'
+    AND t.relname IN ('attendance_records', 'attendance_exceptions', 'attendance_corrections')
+    AND c.confdeltype = 'c';
+
+  IF v_cascades > 0 THEN
+    RAISE EXCEPTION 'FALHA: % FK(s) de histórico de presença ainda usam ON DELETE CASCADE.', v_cascades;
+  END IF;
+
+  SELECT count(*) INTO v_restricts
+  FROM pg_constraint c
+  WHERE c.contype = 'f'
+    AND c.conname IN (
+      'attendance_records_member_establishment_fkey',
+      'attendance_records_establishment_id_fkey',
+      'attendance_exceptions_member_establishment_fkey',
+      'attendance_exceptions_establishment_id_fkey',
+      'attendance_corrections_attendance_establishment_fkey',
+      'attendance_corrections_establishment_id_fkey'
+    )
+    AND c.confdeltype = 'r';
+
+  IF v_restricts <> 6 THEN
+    RAISE EXCEPTION 'FALHA: esperadas 6 FKs RESTRICT no histórico de presença, encontradas %.', v_restricts;
+  END IF;
+
+  RAISE NOTICE 'OK: vínculo/estabelecimento com histórico não é apagado em cascata.';
+END $$;
+
+--------------------------------------------------------------------------------
 -- 2. Trigger de criação automática de perfis
 --------------------------------------------------------------------------------
 DO $$
@@ -368,7 +424,11 @@ DECLARE
     'public.establishment_invitations',
     'public.establishment_services',
     'public.establishment_professionals',
-    'public.establishment_professional_services'
+    'public.establishment_professional_services',
+    'public.establishment_schedules',
+    'public.attendance_records',
+    'public.attendance_exceptions',
+    'public.attendance_corrections'
   ];
   v_privilege text;
   v_privileges text[] := ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'];
@@ -726,7 +786,13 @@ BEGIN
       'get_my_pending_invitations',
       'set_establishment_professional',
       'add_establishment_professional_service',
-      'remove_establishment_professional_service'
+      'remove_establishment_professional_service',
+      'get_establishment_clock',
+      'set_establishment_schedule',
+      'record_attendance_check_in',
+      'record_attendance_check_out',
+      'record_attendance_exception',
+      'correct_attendance_record'
     )
     AND (
       has_function_privilege('anon', p.oid, 'EXECUTE')
@@ -788,7 +854,11 @@ BEGIN
         'establishment_invitations',
         'establishment_services',
         'establishment_professionals',
-        'establishment_professional_services'
+        'establishment_professional_services',
+        'establishment_schedules',
+        'attendance_records',
+        'attendance_exceptions',
+        'attendance_corrections'
       )
       AND NOT c.relrowsecurity
   LOOP
@@ -814,7 +884,11 @@ BEGIN
         'establishment_invitations',
         'establishment_services',
         'establishment_professionals',
-        'establishment_professional_services'
+        'establishment_professional_services',
+        'establishment_schedules',
+        'attendance_records',
+        'attendance_exceptions',
+        'attendance_corrections'
       )
   LOOP
     RAISE NOTICE 'AVISO: tabela publica fora do escopo do projeto sem RLS: %', r.relname;
