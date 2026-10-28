@@ -52,14 +52,47 @@ const professionalRow = {
 }
 
 function expectChainedQuery() {
-  const builder = {
+  const professionalBuilder = {
     select: vi.fn().mockReturnThis(),
     eq: vi.fn().mockReturnThis(),
     order: vi.fn(async () => ({ data: [professionalRow], error: null })),
   }
+  const memberBuilder = {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    in: vi.fn(async () => ({ data: [professionalRow.member], error: null })),
+  }
+  const linkBuilder = {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    in: vi.fn(async () => ({
+      data: [
+        { id: 'link-1', professional_id: 'pro-1', service_id: 'svc-1' },
+        { id: 'link-2', professional_id: 'pro-1', service_id: 'svc-2' },
+      ],
+      error: null,
+    })),
+  }
+  const serviceBuilder = {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    in: vi.fn(async () => ({
+      data: [
+        { id: 'svc-1', name: 'Corte Masculino', category: 'cabelo', is_active: true },
+        { id: 'svc-2', name: 'Barba', category: 'barba', is_active: false },
+      ],
+      error: null,
+    })),
+  }
 
-  fromMock.mockReturnValue(builder)
-  return builder
+  fromMock.mockImplementation((table: string) => {
+    if (table === 'establishment_professionals') return professionalBuilder
+    if (table === 'establishment_members') return memberBuilder
+    if (table === 'establishment_professional_services') return linkBuilder
+    return serviceBuilder
+  })
+
+  return { professionalBuilder, memberBuilder, linkBuilder, serviceBuilder }
 }
 
 describe('listEstablishmentProfessionals', () => {
@@ -68,15 +101,21 @@ describe('listEstablishmentProfessionals', () => {
   })
 
   it('consulta a tabela com filtro pelo estabelecimento ativo e mapeia a leitura', async () => {
-    const builder = expectChainedQuery()
+    const { professionalBuilder, memberBuilder, linkBuilder, serviceBuilder } = expectChainedQuery()
 
     const professionals = await listEstablishmentProfessionals('est-1')
 
     expect(fromMock).toHaveBeenCalledWith('establishment_professionals')
-    expect(builder.select).toHaveBeenCalledWith(
-      'id, member_id, accepts_appointments, created_at, member:establishment_members!establishment_professionals_member_establishment_fkey(id, user_id, role, is_active, profiles:user_id(id, full_name, avatar_url)), services:establishment_professional_services!establishment_professional_services_professional_establishment_fkey(id, establishment_services:establishment_professional_services_service_establishment_fkey(id, name, category, is_active))',
+    expect(professionalBuilder.select).toHaveBeenCalledWith('id, member_id, accepts_appointments, created_at')
+    expect(professionalBuilder.eq).toHaveBeenCalledWith('establishment_id', 'est-1')
+    expect(memberBuilder.select).toHaveBeenCalledWith(
+      'id, user_id, role, is_active, profiles:user_id(id, full_name, avatar_url)',
     )
-    expect(builder.eq).toHaveBeenCalledWith('establishment_id', 'est-1')
+    expect(linkBuilder.select).toHaveBeenCalledWith('id, professional_id, service_id')
+    expect(serviceBuilder.select).toHaveBeenCalledWith('id, name, category, is_active')
+    expect(memberBuilder.eq).toHaveBeenCalledWith('establishment_id', 'est-1')
+    expect(linkBuilder.eq).toHaveBeenCalledWith('establishment_id', 'est-1')
+    expect(serviceBuilder.eq).toHaveBeenCalledWith('establishment_id', 'est-1')
 
     expect(professionals).toHaveLength(1)
     expect(professionals[0]).toMatchObject({
